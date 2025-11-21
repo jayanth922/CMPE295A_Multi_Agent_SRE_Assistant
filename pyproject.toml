@@ -20,7 +20,7 @@ dependencies = [
     "langchain-community",
     "langsmith[otel]",
     "pydantic>=2.0.0",
-    "uvloop>=0.20.0",
+    "uvloop>=0.20.0; sys_platform != 'win32'",
     "fastapi>=0.104.0",
     "uvicorn>=0.24.0",
     "pyyaml>=6.0.1",

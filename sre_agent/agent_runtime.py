@@ -3,6 +3,9 @@
 import asyncio
 import logging
 import os
+from dotenv import load_dotenv
+
+load_dotenv()
 from datetime import datetime, timezone
 from typing import Any, Dict
 
