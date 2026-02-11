@@ -4,188 +4,117 @@
 ![Architecture](https://img.shields.io/badge/Architecture-Event%20Driven-blue)
 ![Agents](https://img.shields.io/badge/Agents-LangGraph-orange)
 
-An autonomous, event-driven Site Reliability Engineering (SRE) platform that automates incident response. Built on **LangGraph** and the **Model Context Protocol (MCP)**, it observes observability signals (Prometheus/Loki), orients using specialist agents, decides on remediation plans, and executes actions with safety guardrails.
+An **Autonomous Site Reliability Engineering (SRE) Agent** that doesn't just alert you—it investigates, plans, and fixes incidents using production-grade tools.
+
+Built on **LangGraph** (Orchestration) and the **Model Context Protocol (MCP)** (Infrastructure Access).
+
+---
 
 ## 🚀 Key Features
 
-*   **Closed-Loop Autonomy:** Implements the OODA loop (Observe, Orient, Decide, Act) for full incident lifecycle management.
-*   **Zero-Mock Architecture:** Integrates with *real* infrastructure (Prometheus, Loki, Kubernetes, GitHub, Notion) via MCP. No synthetic data paths.
-*   **Safety First:** Policy-as-Code guardrails ensure no destructive action is taken without approval (unless configured otherwise).
-*   **Specialist Agents:**
-    *   **Kubernetes Agent:** Pod/Deployment diagnostics and remediation.
-    *   **Logs Agent:** Semantic log analysis using Loki.
-    *   **Metrics Agent:** Golden signal analysis (Latency, Traffic, Errors, Saturation).
-    *   **Runbooks Agent:** RAG-based runbook retrieval from Notion.
-    *   **GitHub Agent:** Correlates deployments with incidents and safeguards code (Reverts).
-*   **Live Control Center:** Real-time dashboard for monitoring agent reasoning and system health.
-
-## 📖 Deep Dive: How It Works
-
-### 1. The Concept: "The Autonomous SRE"
-
-Imagine a Senior Site Reliability Engineer who never sleeps. This agent doesn't just "alert" you; it investigates, thinks, plans, and acts.
-
-*   **The Brain (SRE Agent):** Uses **LangGraph** to maintain a persistent state of the incident. It thinks in loops (Observe -> Orient -> Decide -> Act).
-*   **The Hands (MCP Servers):** The agent cannot touch your infrastructure directly. It asks "Tools" to do it. Tools are safely isolated in **MCP Servers** (Model Context Protocol).
-    *   *Need logs?* Ask the Loki MCP.
-    *   *Need to revert code?* Ask the GitHub MCP.
-*   **The Eyes (Dashboard):** A real-time mission control where you can watch the agent "think" (trace its reasoning) and approve its dangerous plans.
+*   **The "Senior SRE" Brain:** Implements the OODA loop (Observe, Orient, Decide, Act) to solve problems like a human expert.
+*   **Real Infrastructure, No Mocks:** Connects to *actual* Kubernetes clusters, GitHub repos, and Prometheus metrics via secure MCP tunnels.
+*   **Safety Guardrails:** A "Policy Engine" reviews every plan. Risky actions (like `revert_commit`) require human approval via the dashboard.
+*   **Mission Control:** A real-time UI to watch the agent "think" and execute.
 
 ---
 
-### 2. Anatomy of an Incident (The Workflow)
+## 📖 How It Works (Deep Dive)
 
-Here is exactly what happens when an alert fires, step-by-step:
+### The Workflow: Anatomy of an Incident
 
-#### Phase 1: The Trigger 🚨
-*   **Prometheus** detects a spike in 500 errors.
-*   It sends a JSON webhook to the **Agent's API** (`/webhook/alert`).
-*   **Agent Runtime** (`agent_runtime.py`) receives it, validates it, and spins up a new **Investigation Session**.
-
-#### Phase 2: Observation (The Swarm) 🔍
-*   The **Supervisor** (`supervisor.py`) looks at the alert labels. "Oh, this is a Kubernetes High Error Rate."
-*   It wakes up the **Kubernetes Agent** and **Logs Agent**.
-*   **K8s Agent:** uses `k8s_real` MCP to run `kubectl get pods` and `kubectl describe pod`. "Aha! The frontend-v2 pod is CrashLoopBackOff."
-*   **Logs Agent:** uses `loki_real` MCP to query logs. "I see a `NullPointerException` in `checkout.js`."
-*   They save these findings into the shared **Agent State** (`agent_state.py`).
-
-#### Phase 3: Orientation (The Hypothesis) 💡
-*   The **Reflector Node** reads the findings.
-*   It checks **GitHub MCP**: "Was there a recent deployment?" -> "Yes, commit `a1b2c` was merged 10 minutes ago."
-*   **Hypothesis:** "Commit `a1b2c` introduced a bug in `checkout.js` causing a crash loop."
-
-#### Phase 4: Decision (The Plan) 🛡️
-*   The **Planner Node** (`agent_nodes.py`) formulates a solution.
-*   **Plan:** "Revert Commit `a1b2c`."
-*   **Safety Check:** The **Policy Engine** (`policy_engine.py`) scans the plan.
-    *   *Risk:* HIGH (Reverting code affects production).
-    *   *Policy:* "High risk actions require Human Approval."
-*   The agent pauses and pings the **Dashboard**.
-
-#### Phase 5: Action (The Execution) ⚡
-*   **You** see the "Approve Revert?" button on the Dashboard (`MissionControl.tsx`). You click **Approve**.
-*   The **Executor Node** wakes up.
-*   It calls `github_real` MCP -> `create_revert_pr` -> `merge_pr`.
-*   The code is reverted. The pod stabilizes.
-
-#### Phase 6: Verification ✅
-*   The **Verifier Node** queries Prometheus again. "Error rate has dropped to 0%."
-*   Case Closed.
+1.  **Trigger 🚨:** A high-latency alert fires in Prometheus. It hits the agent's webhook.
+2.  **Observe 🔍:** The **Supervisor** wakes up the **K8s Agent** and **Logs Agent**.
+    *   *Agent:* "Get me logs for the `frontend` pod."
+    *   *MCP:* Returns the crash log: `NullPointerException in header.tsx`.
+3.  **Orient 💡:** The **Reflector** correlates findings.
+    *   *Hypothesis:* "Commit `x89s0` (merged 5 mins ago) broke the header component."
+4.  **Decide 🛡️:** The **Planner** proposes a fix: "Revert commit `x89s0`."
+    *   *Policy Check:* "Reverting code is High Risk. Requesting Human Approval."
+5.  **Act ⚡:** You see the request on the Dashboard and click **Approve**.
+    *   The **Executor** calls the **GitHub MCP** to open and merge the revert PR.
+6.  **Verify ✅:** The **Verifier** confirms metric stability.
 
 ---
 
-### 3. Detailed File Guide (Where does code live?)
+## 📂 The File Guide (What is all this?)
 
-#### 🧠 The Core Brain (`sre_agent/`)
-This directory contains the logic for the "Senior SRE" bot.
-*   `agent_runtime.py`: **The Front Door.** A FastAPI server that listens for webhooks. It initializes the graph for each new incident.
-*   `graph_builder.py`: **The Map.** Defines the flow of the agent. "After A, go to B". It wires together all the nodes (Investigator -> Planner -> Executor).
-*   `agent_nodes.py`: **The Workers.** Python functions for each step.
-    *   `investigator_node`: Decides which tools to call.
-    *   `planner_node`: Writes the remediation YAML.
-*   `agent_state.py`: **The Memory.** Defines the data structure (Pydantic models) passed between nodes. Think of this as the "Incident Notebook" passed around the room.
-*   `policy_engine.py`: **The Lawyer.** Checks every plan against a set of rules (Policy as Code). "You cannot restart a database without approval."
-*   `config/agent_config.yaml`: **The Tool Belt.** Lists which Agent is allowed to use which MCP Tool.
+You asked for a complete breakdown. Here is every file and folder explained:
 
-#### 🛠️ The Infrastructure (`infrastructure/`)
-*   `docker-compose.yaml`: **The Blueprint.** Defines how to spin up the entire "Company in a Box".
-    *   Starts `sre-agent` (The Brain).
-    *   Starts `dashboard` (The UI).
-    *   Starts `mcp-*` servers (The Tools).
-    *   Starts `redis` (Hot memory) and `postgres` (Long-term memory).
+### 🛠️ Developer Tools (Why do I need these?)
+*   **`Makefile`:** Think of this as your "Command Shortcuts". Instead of typing long commands, you just type:
+    *   `make format`: Beautifies your code (using Black).
+    *   `make lint`: Checks for bugs/style issues (using Ruff).
+    *   `make test`: Runs functionality tests (using Pytest).
+    *   *Why?* It ensures every developer on the team maintains the same high code quality standard.
+*   **`pyproject.toml`:** The configuration center for Python. It lists all libraries (dependencies) the project needs and configures the tools used in the Makefile.
+*   **`.gitignore`:** Tells Git which files to *ignore* (like passwords or temporary build folders).
 
-#### � The Tools (`mcp_servers/`)
-Each folder here is a tiny, isolated microservice.
-*   `k8s_real/server.py`: A Python server that knows how to talk to your local Kubernetes cluster (`~/.kube/config`). Exposes tools like `get_pod_logs`.
-*   `github_real/server.py`: Knows how to talk to GitHub API. Exposes `create_pull_request`.
-*   *Why split them?* Security and isolation. The Agent code never imports `kubernetes`. It just asks the MCP server.
+### 🧠 `sre_agent/` (The Brain)
+The core Python application.
+*   `agent_runtime.py`: The web server (FastAPI) that receives alerts.
+*   `graph_builder.py`: **The most important file.** It defines the "Brain wiring" (the LangGraph state machine).
+*   `agent_nodes.py`: The logic for each "step" of thinking (Investigator, Planner, Executor).
+*   `agent_state.py`: The "Short-term Memory" where the agent writes its findings during an incident.
+*   `policy_engine.py`: The "Safety Officer". It rejects dangerous plans.
+*   `config/`: Configuration files and Prompts (the personality instructions for the AI).
 
-#### �️ The Dashboard (`dashboard/`)
-A Next.js (React) application.
-*   `app/clusters/[id]/page.tsx`: The main "War Room" page.
-*   `components/dashboard/MissionControl.tsx`: The black terminal-like window that streams the agent's "Thoughts". It connects via WebSocket to the Agent.
-*   `components/dashboard/IncidentCommandCenter.tsx`: The layout that holds logs, metrics sparklines, and action buttons.
+### 🔌 `mcp_servers/` (The Hands)
+The agent cannot touch your laptop/cloud directly. It asks these isolated servers to do it.
+*   `k8s_real`: Knows how to talk to Kubernetes (`kubectl`).
+*   `github_real`: Knows how to talk to GitHub.
+*   `prometheus_real` / `loki_real`: Know how to query metrics and logs.
 
-#### � The Backend (`backend/`)
-Handles persistent storage for the UI.
-*   `models.py`: Database tables (SQLAlchemy) for `Incidents`, `Users`, and `AuditLogs`.
-*   `crud.py`: Functions to Save/Load these objects from Postgres. |
+### 🖥️ `dashboard/` (The Eyes)
+The User Interface (Next.js/React).
+*   `app/clusters/[id]/page.tsx`: The main "War Room" screen.
+*   `components/dashboard/MissionControl.tsx`: The terminal window that streams the agent's thoughts.
+
+### 💾 `backend/` (The Memory)
+Saves history to a database.
+*   `models.py`: Defines tables (Incidents, Users).
+*   `crud.py`: Functions to save/load data.
+
+### 🏗️ `infrastructure/` (The Data Center)
+*   `docker-compose.yaml`: The "Master Switch". It spins up the Agent, Dashboard, Database, and all MCP servers in one go.
 
 ---
 
 ## 🛠️ Quick Start
 
-**Prerequisites:** Docker, Docker Compose, and `git`.
+**Prerequisites:** Docker, Docker Compose, and Git.
 
-### 1. Clone the repository
-```bash
-git clone https://github.com/jayanth922/CMPE295A_Multi_Agent_SRE_Assistant.git
-cd CMPE295A_Multi_Agent_SRE_Assistant
-```
-
-### 2. One-Click Startup
-We provide a unified startup script that handles configuration and container orchestration.
+### 1. One-Click Start
+We created a script to handle everything for you.
 
 ```bash
 ./start.sh
 ```
-*This script will generate a default `.env` file (using local Ollama with **Llama 3.2**) and launch the stack.*
+*This script will:*
+1.  Check for `.env` (and create a default one using **Llama 3.2**).
+2.  Build all Docker containers.
+3.  Start the entire stack.
 
-### 3. Access the Platform
+### 2. Access the Platform
 *   **Dashboard:** [http://localhost:3000](http://localhost:3000)
 *   **Agent API:** [http://localhost:8080/docs](http://localhost:8080/docs)
-*   **Observability:** *External (Configure in `.env`)*
 
-### 4. Stop the System
+### 3. Stop
 ```bash
 ./stop.sh
 ```
 
 ---
 
-## ⚙️ Configuration
+## ⚙️ Configuration (`.env`)
 
-The system is configured via environment variables in `.env`.
+The system uses environment variables to connect to your real tools.
 
-### LLM Provider
-By default, the system uses **Ollama** (local). To use **Groq** for higher performance:
-```bash
-LLM_PROVIDER=groq
-GROQ_API_KEY=gsk_...
-```
-
-### Integrations (Optional)
-To enable full capabilities for real-world usage, populate these keys in `.env`:
-*   `GITHUB_TOKEN`: For commit analysis and revert PRs.
-*   `NOTION_API_KEY` & `NOTION_RUNBOOK_DATABASE_ID`: For runbook RAG.
-*   `PROMETHEUS_URL` & `LOKI_URL`: To point the agent at your production observability stack.
+*   `LLM_PROVIDER`: `ollama` (default) or `groq`.
+*   `GITHUB_TOKEN`: Your GitHub Personal Access Token (for the GitHub Agent).
+*   `PROMETHEUS_URL`: URL of your Prometheus server (e.g. `http://host.docker.internal:9090`).
 
 ---
-
-## 🧪 Development
-
-This project adheres to strict coding standards. Use the `Makefile` for quality assurance.
-
-```bash
-make format    # Auto-format code (Black)
-make lint      # Run linters (Ruff)
-make quality   # Run full quality suite (Lint, Typecheck, Security)
-make test      # Run unit tests
-```
-
----
-
-## 📚 Documentation
-*   **[Master Architecture Doc](docs/MASTER_PROMPT.md):** Deep dive into system design and behavioral contracts.
-*   **[Agent Configuration](sre_agent/config/agent_config.yaml):** Tool definitions and agent capabilities.
-
----
-
-## 🤝 Contributing
-1.  Fork the repository.
-2.  Create a feature branch (`git checkout -b feature/amazing-agent`).
-3.  Commit your changes.
-4.  Open a Pull Request.
 
 ## 📄 License
 MIT License. Copyright (c) 2026 Multi-Agent SRE Team.
