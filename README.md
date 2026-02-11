@@ -1,4 +1,4 @@
-# Multi-Agent SRE Assistant
+# Autonomous SRE Platform (Agentic)
 
 ![Status](https://img.shields.io/badge/Status-Production%20Ready-green)
 ![Architecture](https://img.shields.io/badge/Architecture-Event%20Driven-blue)
@@ -49,7 +49,7 @@ We provide a unified startup script that handles configuration and container orc
 ```bash
 ./start.sh
 ```
-*This script will generate a default `.env` file (using local Ollama LLM) and launch the stack.*
+*This script will generate a default `.env` file (using local Ollama with **Llama 3.2**) and launch the stack.*
 
 ### 3. Access the Platform
 *   **Dashboard:** [http://localhost:3000](http://localhost:3000)
@@ -97,6 +97,7 @@ make test      # Run unit tests
 
 ## 📚 Documentation
 *   **[Master Architecture Doc](docs/MASTER_PROMPT.md):** Deep dive into system design and behavioral contracts.
+*   **[Detailed Project Walkthrough](PROJECT_EXPLANATION.md):** File-by-file explanation and workflow analysis.
 *   **[Agent Configuration](sre_agent/config/agent_config.yaml):** Tool definitions and agent capabilities.
 
 ---
@@ -108,4 +109,4 @@ make test      # Run unit tests
 4.  Open a Pull Request.
 
 ## 📄 License
-MIT License. Copyright (c) 2024 CMPE295A Team.
+MIT License. Copyright (c) 2026 Multi-Agent SRE Team.
