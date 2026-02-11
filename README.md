@@ -26,7 +26,7 @@ The system is composed of decoupled microservices running in Docker:
 | Service | Description |
 | :--- | :--- |
 | **SRE Agent** | The core brain. FastAPI runtime hosting the LangGraph state machine. |
-| **Dashboard** | Next.js/Streamlit UI for real-time observation and human-in-the-loop approvals. |
+| **Dashboard** | Next.js UI for real-time observation and human-in-the-loop approvals. |
 | **MCP Servers** | Standalone tool providers (K8s, Prometheus, Loki, GitHub, Notion, Memory). |
 | **Vector Store** | Qdrant for semantic memory and RAG. |
 | **Observability** | Prometheus and Loki for self-monitoring and target app monitoring. |
@@ -37,7 +37,7 @@ The system is composed of decoupled microservices running in Docker:
 
 **Prerequisites:** Docker, Docker Compose, and `git`.
 
-### 1. clone the repository
+### 1. Clone the repository
 ```bash
 git clone https://github.com/jayanth922/CMPE295A_Multi_Agent_SRE_Assistant.git
 cd CMPE295A_Multi_Agent_SRE_Assistant
@@ -54,7 +54,7 @@ We provide a unified startup script that handles configuration and container orc
 ### 3. Access the Platform
 *   **Dashboard:** [http://localhost:3000](http://localhost:3000)
 *   **Agent API:** [http://localhost:8080/docs](http://localhost:8080/docs)
-*   **Prometheus:** [http://localhost:9090](http://localhost:9090)
+*   **Observability:** *External (Configure in `.env`)*
 
 ### 4. Stop the System
 ```bash
