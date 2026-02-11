@@ -19,108 +19,79 @@ An autonomous, event-driven Site Reliability Engineering (SRE) platform that aut
     *   **GitHub Agent:** Correlates deployments with incidents and safeguards code (Reverts).
 *   **Live Control Center:** Real-time dashboard for monitoring agent reasoning and system health.
 
-## 🏗️ Architecture & Workflow
+## 🧠 How It Works: The "Digital SRE"
 
-### 1. System Architecture
+To understand this project, imagine hiring a new Site Reliability Engineer (the **SRE Agent**). You give them access to your tools (Kubernetes, GitHub, Prometheus) and a runbook. This project automates that "Digital SRE" using AI.
 
-This project is an **Autonomous SRE Agent** built on an event-driven, microservices architecture. It uses **LangGraph** for stateful orchestration and the **Model Context Protocol (MCP)** to interface with real infrastructure.
+### 1. The Core Concept (OODA Loop)
+The agent doesn't just "chat." It thinks and acts in a loop, exactly like a human engineer:
 
-#### Core Components
+1.  **👀 Observe (Investigation):** "I see an alert. Let me check the logs and metrics to see what's broken."
+2.  **🧠 Orient (Reflection):** "The logs show a database error starting 5 minutes ago. This matches the deployment of `v2.0`."
+3.  **💡 Decide (Planning):** "I should revert the last commit to fix this immediately. I need approval first."
+4.  **✋ Act (Execution):** "Approval granted. Running `git revert` and deploying."
+5.  **✅ Verify:** "Latency is back to normal. Incident closed."
 
-1.  **SRE Agent (The Brain):**
-    *   **Runtime:** Python FastAPI service.
-    *   **Logic:** A LangGraph state machine implementing an **OODA Loop** (Observe, Orient, Decide, Act).
-    *   **State:** Persisted in Redis (hot state) and Postgres (long-term incident history).
-    *   **Memory:** Qdrant (Vector DB) for semantic recall of past incidents and runbooks.
+This loop is built using **LangGraph**, which defines these steps as a "State Machine" in `sre_agent/graph_builder.py`.
 
-2.  **MCP Servers (The Hands):**
-    *   Standalone sidecar containers that expose specific tools to the agent.
-    *   **k8s_real:** Interacts with the Kubernetes API (get pods, logs, describe).
-    *   **prometheus_real / loki_real:** Queries metrics and logs.
-    *   **github_real:** Manages code operations (list commits, create revert PRs).
-    *   **notion_real:** Fetches runbooks and docs.
+---
 
-3.  **Dashboard (The Eyes):**
-    *   A Next.js application providing a "Mission Control" interface.
-    *   Real-time websocket connection to the Agent to stream "Thoughts" and "Actions".
-    *   Human-in-the-loop approval gates for sensitive actions.
+### 2. The Components (The "Body")
 
-### 2. The Workflow (OODA Loop)
+*   **The Brain (`sre_agent/`):** This is the Python application. It receives alerts (webhooks) and decides what to do. It holds the "State" of the incident in memory.
+*   **The Hands (`mcp_servers/`):** The Brain cannot touch your infrastructure directly. It uses **MCP Servers** as "hands" or "drivers."
+    *   Need to check Kubernetes? The Brain asks the `k8s_real` server.
+    *   Need to query metrics? The Brain asks the `prometheus_real` server.
+    *   *Why?* This keeps the Brain generic. It doesn't know *how* to talk to K8s, it just asks the "K8s Hand" to do it.
+*   **The Eyes (`dashboard/`):** A real-time Control Room. Since the agent acts autonomously, you need to trust it. The dashboard shows you exactly what the agent is "thinking" (Thought Traces) and lets you approve/reject critical actions (like `revert_commit`).
 
-The agent follows a cyclical workflow triggered by an alert:
+---
 
-1.  **Trigger (Webhook):** An alert arrives from Prometheus at `POST /webhook/alert`.
-2.  **CONTEXT_BUILDER:** The payload is enriched. A unique `session_id` is generated.
-3.  **OBSERVE (Investigation Swarm):**
-    *   The **Supervisor** delegates to sub-agents (K8s, Logs, Metrics) based on the alert type.
-    *   Agents call MCP tools (e.g., `search_logs`, `get_pod_status`) to gather data.
-4.  **ORIENT (Reflector):**
-    *   The agent analyzes findings against the "State of the World".
-    *   It formulates a **Hypothesis** (e.g., "Commit X caused latency spike").
-5.  **DECIDE (Planner):**
-    *   A remediation plan is generated (e.g., "Revert Commit X" or "Restart Pod").
-    *   **Policy Check:** The `policy_engine` assigns a risk score. High-risk actions require approval.
-6.  **ACT (Executor):**
-    *   If approved, the agent calls the executor tools (e.g., `github_create_pr`).
-7.  **VERIFY (Verifier):**
-    *   The agent re-checks metrics to confirm resolution.
+### 3. Deep Dive: Code Structure
 
-### 3. File-by-File Explanation
+Here is exactly what you are looking at in the codebase:
 
-#### Root Directory
-*   `README.md`: The entry point documentation.
-*   `start.sh / stop.sh`: Automation scripts for one-click Docker Compose and environment setup.
-*   `Makefile`: Development commands (linting, formatting, testing).
-*   `pyproject.toml`: Python dependency definitions (using `uv` package manager).
+#### 📂 `sre_agent/` (The Brain)
+*   **`agent_runtime.py`**: The " Ears." A web server (FastAPI) that listens for Alerts from Prometheus (`POST /webhook/alert`). When an alert hits this file, the agent wakes up.
+*   **`graph_builder.py`**: The "Map." This file defines the flowchart of the agent's brain. It connects the nodes: `Investigator` -> `Planner` -> `Executor`.
+*   **`agent_nodes.py`**: The "Skills." Each function here (`investigation_node`, `execution_node`) performs the actual thinking for that step of the flow.
+*   **`policy_engine.py`**: The "Conscience." Before doing anything dangerous (like restarting a DB), the agent checks this file. If the Risk Score is high, it pauses and waits for Human Approval.
+*   **`config/agent_config.yaml`**: The "Resume." Lists what tools each sub-agent is allowed to use. (e.g., "The GitHub Agent is allowed to `create_pr`").
 
-#### 📂 infrastructure/
-Contains deployment configurations.
-*   `docker-compose.yaml`: The main stack definition. Runs Agent, Dashboard, Databases, and MCP servers.
-*   `k8s/`: Kubernetes manifests for production deployment (Base/Kustomize).
+#### 📂 `infrastructure/` (The World)
+*   **`docker-compose.yaml`**: The "Blueprint." Describes how to spin up the entire world: the Agent, the Dashboard, the Databases (Redis/Postgres), and the MCP Tool Servers.
+*   **`k8s/`**: The "Production Instructions." If you want to deploy this to a real Cloud cluster, you use these files.
 
-#### 📂 sre_agent/
-The core application logic (Python).
-*   `agent_runtime.py`: The FastAPI server entry point. Handles webhooks and API routes.
-*   `graph_builder.py`: Defines the LangGraph nodes and edges (the "State Machine" definition).
-*   `agent_nodes.py`: Implementation of the graph nodes (Investigator, Planner, Executor).
-*   `agent_state.py`: Pydantic models defining the data structure passed between nodes.
-*   `supervisor.py`: Logic for the orchestrator agent that manages sub-agents.
-*   `policy_engine.py`: "Safety Guardrails" logic. Evaluates plans for risk.
-*   `job_poller.py`: Background worker that listens for Dashboard jobs (e.g., "Configure Cluster").
-*   `config/agent_config.yaml`: Configuration mapping Agents to their allowed Tools.
-*   `config/prompts/*.txt`: System prompts for the LLMs (defining their persona and instructions).
+#### 📂 `mcp_servers/` (The Tools)
+*   **`k8s_real/server.py`**: A tiny server that just knows how to run `kubectl` commands.
+*   **`github_real/server.py`**: A tiny server that knows how to use the GitHub API.
+*   *Note: These are separate from the agent so they can be swapped out easily.*
 
-#### 📂 mcp_servers/
-Independent tool providers (Microservices).
-*   `k8s_real/`:
-    *   `server.py`: FastMCP server exposing `kubectl` wrappers.
-*   `github_real/`:
-    *   `server.py`: Exposes GitHub API tools (PyGithub).
-*   `prometheus_real/`:
-    *   `server.py`: Exposes PromQL querying tools.
-    *   (Similar structure for `loki_real`, `notion_real`, `memory_real`).
+#### 📂 `dashboard/` (The Interface)
+*   **`app/clusters/[id]/page.tsx`**: The main code for the "Mission Control" page you see in the browser.
+*   **`components/dashboard/MissionControl.tsx`**: The specific component that renders the scrolling "Terminal" logs of the agent's actions.
 
-#### 📂 dashboard/
-The Frontend application (Next.js / React).
-*   `app/`: Next.js App Router pages.
-    *   `page.tsx`: Main landing page (Cluster list).
-    *   `clusters/[id]/page.tsx`: Detailed cluster view (The "Mission Control").
-*   `components/dashboard/`: React components.
-    *   `MissionControl.tsx`: The terminal-like interface showing live logs.
-    *   `MetricSparklines.tsx`: Visualizations for latency/error rates.
-    *   `IncidentCommandCenter.tsx`: The layout container.
+#### 📂 `scripts/` (Helpers)
+*   **`start.sh`**: A simple script that runs `docker compose up` so you don't have to remember the commands.
+*   **`seed_runbooks.py`**: A helper that fills your Notion database with template Runbooks (like "How to fix high latency") so the agent has something to read.
 
-#### 📂 scripts/
-Utility scripts for maintenance.
-*   `seed_runbooks.py`: Populates the Notion database with initial SRE runbooks.
-*   `k8s-apply.sh`: Helper to deploy the stack to a Kubernetes cluster.
-*   `audit_runbooks.py`: Helper to verify Notion content.
+---
 
-#### 📂 backend/
-The Persistence Layer (SQLAlchemy / Postgres).
-*   `models.py`: Database schema definitions (Users, Clusters, Incidents).
-*   `crud.py`: Create/Read/Update/Delete operations.
-*   `database.py`: DB connection management. |
+### 4. Example Scenario: "The Bad Deployment"
+
+1.  **You** push bad code. CI/CD deploys it.
+2.  **Prometheus** (Infrastructure) notices high latency and fires an alert to `sre-agent`.
+3.  **`agent_runtime.py`** receives the alert and starts a new generic Session.
+4.  **`graph_builder.py`** (The Graph) starts the `Investigator` node.
+5.  **`agent_nodes.py`** (Investigator) asks: "I need to check recent deployments." -> Calls `mcp-k8s`.
+6.  **`mcp-k8s`** server replies: "Deployment `frontend-v2` happened 1 min ago."
+7.  **`agent_nodes.py`** (Reflector) thinks: "Timing matches. High confidence this caused it."
+8.  **`agent_nodes.py`** (Planner) proposes: "Revert commit `a1b2c3d`."
+9.  **`policy_engine.py`** flags this as "High Risk."
+10. **Dashboard** shows a "Waiting for Approval" button.
+11. **You** click "Approve."
+12. **`agent_nodes.py`** (Executor) calls `mcp-github` -> `create_revert_pr`.
+13. **Result:** PR created, incident resolved. |
 
 ---
 
