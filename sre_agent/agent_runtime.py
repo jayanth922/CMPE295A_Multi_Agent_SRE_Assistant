@@ -7,9 +7,9 @@ from dotenv import load_dotenv
 
 load_dotenv()
 from datetime import datetime, timezone
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from langchain_core.messages import HumanMessage
 from langchain_core.tools import BaseTool
@@ -21,6 +21,19 @@ from .constants import SREConstants
 # Import logging config
 from .logging_config import configure_logging
 from .multi_agent_langgraph import create_multi_agent_system
+
+# SaaS API Imports
+from sre_agent.api.v1 import clusters, agent_connect, incidents
+from backend import crud, database, models
+from backend.models import IncidentStatus
+import uuid
+
+# SaaS API Imports
+from sre_agent.api.v1 import clusters, agent_connect, incidents
+from backend import crud, database, models
+from backend.routers import auth as auth_router
+from backend.models import IncidentStatus
+import uuid
 
 # Configure logging based on DEBUG environment variable
 # This ensures debug mode works even when not run via __main__
@@ -59,6 +72,20 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Mount SaaS API Routers
+app.include_router(clusters.router, prefix="/api/v1")
+app.include_router(agent_connect.router, prefix="/api/v1")
+app.include_router(incidents.router, prefix="/api/v1")
+app.include_router(auth_router.router)
+
+# Job Queue Router
+from sre_agent.api.v1 import jobs as jobs_router
+app.include_router(jobs_router.router, prefix="/api/v1")
+
+# Mission Control Router (Audit Logs & Approvals)
+from sre_agent.api.v1 import mission_control
+app.include_router(mission_control.router, prefix="/api/v1")
+
 
 # Simple request/response models
 class InvocationRequest(BaseModel):
@@ -72,6 +99,11 @@ class InvocationResponse(BaseModel):
 # Global variables for agent state
 agent_graph = None
 tools: list[BaseTool] = []
+
+# Redis state store for pending approvals (replaces in-memory dict)
+from .redis_state_store import get_state_store
+
+state_store = get_state_store()
 
 
 async def initialize_agent():
@@ -88,7 +120,7 @@ async def initialize_agent():
         provider = os.getenv("LLM_PROVIDER", "groq").lower()
 
         # Validate provider
-        if provider not in ["groq", "anthropic"]:
+        if provider not in ["groq", "ollama"]:
             logger.warning(f"Invalid provider '{provider}', defaulting to 'groq'")
             provider = "groq"
 
@@ -96,8 +128,12 @@ async def initialize_agent():
         logger.info(f"Using LLM provider: {provider}")
         logger.info(f"Calling create_multi_agent_system with provider: {provider}")
 
+        # Initialize persistence (MemorySaver for now, but could be Postgres)
+        from langgraph.checkpoint.memory import MemorySaver
+        checkpointer = MemorySaver()
+
         # Create multi-agent system using the same function as CLI
-        agent_graph, tools = await create_multi_agent_system(provider)
+        agent_graph, tools = await create_multi_agent_system(provider, checkpointer=checkpointer)
 
         logger.info(
             f"SRE Agent system initialized successfully with {len(tools)} tools"
@@ -110,18 +146,39 @@ async def initialize_agent():
             logger.error(f"LLM Provider Error: {e}")
             print(f"\n❌ {type(e).__name__}:")
             print(str(e))
-            print("\n💡 Set LLM_PROVIDER environment variable to switch providers:")
-            other_provider = "anthropic" if provider == "groq" else "groq"
-            print(f"   export LLM_PROVIDER={other_provider}")
+            print("\n💡 Check your GROQ_API_KEY environment variable")
+            print(f"   export LLM_PROVIDER=ollama")
         else:
             logger.error(f"Failed to initialize SRE Agent system: {e}")
         raise
+
+
+# Global MCP client for metrics queries
+mcp_client_global = None
+
+
+async def get_mcp_client():
+    """Get or create MCP client for metrics queries."""
+    global mcp_client_global
+    if mcp_client_global is None:
+        from .multi_agent_langgraph import create_mcp_client
+        mcp_client_global = create_mcp_client()
+    return mcp_client_global
 
 
 @app.on_event("startup")
 async def startup_event():
     """Initialize agent on startup."""
     await initialize_agent()
+    
+    # Start job poller if CLUSTER_TOKEN is set
+    cluster_token = os.getenv("CLUSTER_TOKEN", "")
+    if cluster_token:
+        from .job_poller import start_job_poller
+        logger.info("🔄 Starting job poller (CLUSTER_TOKEN detected)")
+        start_job_poller()
+    else:
+        logger.info("ℹ️ Job poller disabled (no CLUSTER_TOKEN)")
 
 
 @app.post("/invocations", response_model=InvocationResponse)
@@ -157,7 +214,9 @@ async def invoke_agent(request: InvocationRequest):
             "next": "supervisor",
             "agent_results": {},
             "current_query": user_prompt,
-            "metadata": {},
+            "metadata": {
+                "tools": tools,
+            },
             "requires_collaboration": False,
             "agents_invoked": [],
             "final_response": None,
@@ -228,10 +287,660 @@ async def invoke_agent(request: InvocationRequest):
         )
 
 
-@app.get("/ping")
+@app.api_route("/ping", methods=["GET", "HEAD"])
 async def ping():
-    """Health check endpoint."""
+    """Health check endpoint (GET/HEAD for Docker healthchecks)."""
     return {"status": "healthy"}
+
+
+@app.get("/metrics/snapshot")
+async def get_metrics_snapshot():
+    """
+    Get current metrics snapshot for dashboard telemetry.
+
+    Returns CPU usage and HTTP error rate from Prometheus.
+    Zero-mock: returns 503 when Prometheus is unreachable (no synthetic data).
+    """
+    prometheus_url = os.getenv("PROMETHEUS_URL", "http://localhost:9090")
+    import httpx
+
+    try:
+        cpu_query = "avg(rate(container_cpu_usage_seconds_total[5m])) * 100"
+        error_query = 'sum(rate(http_requests_total{status=~"5.."}[5m]))'
+
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            cpu_response = await client.get(
+                f"{prometheus_url}/api/v1/query",
+                params={"query": cpu_query},
+            )
+            cpu_data = cpu_response.json()
+
+            error_response = await client.get(
+                f"{prometheus_url}/api/v1/query",
+                params={"query": error_query},
+            )
+            error_data = error_response.json()
+
+        cpu_usage = 0.0
+        if cpu_data.get("status") == "success" and cpu_data.get("data", {}).get("result"):
+            result = cpu_data["data"]["result"][0]
+            cpu_usage = float(result.get("value", [None, 0])[1] or 0)
+
+        error_rate = 0.0
+        if error_data.get("status") == "success" and error_data.get("data", {}).get("result"):
+            result = error_data["data"]["result"][0]
+            error_rate = float(result.get("value", [None, 0])[1] or 0)
+
+        return {
+            "cpu_usage_percent": min(100.0, max(0.0, cpu_usage)),
+            "http_error_rate": max(0.0, error_rate),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "source": "prometheus",
+        }
+    except Exception as e:
+        logger.warning(f"Prometheus unreachable for metrics snapshot: {e}")
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error": "prometheus_unavailable",
+                "message": "Metrics snapshot unavailable; Prometheus did not respond.",
+            },
+        )
+
+
+@app.get("/agent/state")
+async def get_agent_state():
+    """
+    Get current agent state including thought traces and pending approvals.
+    
+    Returns:
+        - Active investigations with thought traces
+        - Pending approvals
+        - Cluster health status
+        - Active alerts count
+    """
+    try:
+        # Get all pending approvals from Redis
+        pending_approvals = []
+        active_investigations = []
+        
+        if state_store.is_available():
+            # Note: RedisStateStore doesn't have a list_keys method, so we'll need to track sessions differently
+            # For now, we'll return empty lists and rely on session_id being passed from frontend
+            pass
+        
+        # Get cluster health (simplified - would query K8s in production)
+        cluster_health = "healthy"  # Would query K8s API
+        
+        # Get active alerts count (simplified - would query Prometheus Alertmanager)
+        active_alerts = 0  # Would query Alertmanager API
+        
+        return {
+            "pending_approvals": pending_approvals,
+            "active_investigations": active_investigations,
+            "cluster_health": cluster_health,
+            "active_alerts": active_alerts,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+    except Exception as e:
+        logger.error(f"Error getting agent state: {e}")
+        return {
+            "pending_approvals": [],
+            "active_investigations": [],
+            "cluster_health": "unknown",
+            "active_alerts": 0,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "error": str(e)
+        }
+
+
+@app.get("/agent/state/{session_id}")
+async def get_agent_state_by_session(session_id: str):
+    """
+    Get live agent state, including running logs and approval status.
+    """
+    try:
+        data = state_store.get(session_id)
+        if not data:
+            return {"status": "NOT_FOUND", "logs": []}
+            
+        # Fetch logs from atomic list
+        logs = state_store.get_logs(session_id)
+            
+        return {
+            "session_id": session_id,
+            "status": data.get("status", "UNKNOWN"),
+            "logs": logs,
+            "current_node": data.get("current_node"),
+            "approval_required": data.get("approval_required", False),
+            "remediation_plan": data.get("remediation_plan"),
+            "final_response": data.get("final_response"),
+            "verification_result": data.get("verification_result"),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+
+    except Exception as e:
+        logger.error(f"Error getting session state {session_id}: {e}")
+        return {"status": "ERROR", "error": str(e)}
+
+
+@app.post("/approve/{session_id}")
+async def approve_remediation(session_id: str):
+    """
+    Human approval endpoint for remediation plans.
+    
+    Sets approval_status = APPROVED and resumes graph execution.
+    
+    Args:
+        session_id: Session ID of the pending remediation
+        
+    Returns:
+        Status of approval and resumed execution
+    """
+    global agent_graph
+
+    logger.info(f"Received approval request for session: {session_id}")
+
+    # Get pending state from Redis
+    pending_data = state_store.get(session_id)
+    if not pending_data:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No pending remediation found for session_id: {session_id}",
+        )
+
+    current_state = pending_data.get("state")
+
+    if not current_state:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid pending state - state data missing",
+        )
+
+    # Update approval status
+    current_state["approval_status"] = "APPROVED"
+    current_state["next"] = "executor"  # Resume at executor node
+
+    logger.info(f"✅ Approval granted for session {session_id}, resuming execution")
+
+    # Remove from Redis
+    state_store.delete(session_id)
+
+    # Resume graph execution from executor node
+    from fastapi import BackgroundTasks
+    # We can't easily spawn a background task from here without passing BackgroundTasks object
+    # For now, we'll keep approval synchronous-ish but the graph execution helps
+    # Ideally this would also be async converted
+    try:
+        # Ensure we have all required state fields
+        from .agent_state import AgentState
+        from langchain_core.messages import HumanMessage
+        
+        # Ensure messages exist
+        if "messages" not in current_state or not current_state["messages"]:
+            current_state["messages"] = [
+                HumanMessage(content="Remediation plan approved, resuming execution")
+            ]
+        
+        # Ensure metadata has tools
+        if "metadata" not in current_state:
+            current_state["metadata"] = {}
+        if "tools" not in current_state["metadata"]:
+            current_state["metadata"]["tools"] = tools
+        
+        final_response = ""
+        execution_results = None
+        verification_result = None
+        
+        async for event in agent_graph.astream(current_state):
+            for node_name, node_output in event.items():
+                logger.info(f"Resuming execution - Processing node: {node_name}")
+                # ... (rest of logic) ...
+                # Capture final response
+                if node_name == "aggregate":
+                    final_response = node_output.get("final_response", "")
+                    logger.info("Resumed execution completed")
+
+        return {
+            "status": "approved",
+            "message": "Remediation plan approved and execution completed",
+            "final_response": final_response,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to resume execution after approval: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to resume execution: {str(e)}",
+        )
+
+
+async def run_graph_background(
+    session_id: str, 
+    initial_state: Dict[str, Any], 
+    alert_name: str
+):
+    """
+    Background task to run the agent graph and update Redis state.
+    """
+    global agent_graph
+    
+    logger.info(f"▶️ Starting background graph execution for session: {session_id}")
+    
+    try:
+        # Initial status update
+        state_store.set(session_id, {
+            "status": "RUNNING",
+            # "logs" field removed
+            "current_node": "start",
+            "approval_required": False,
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        })
+        
+        current_execution_state = initial_state
+        # Log initial message to Redis list
+        state_store.append_log(session_id, f"[{datetime.now(timezone.utc).isoformat()}] Investigation started...")
+        
+        # Instantiate callback handler
+        from .callbacks import RedisLogCallbackHandler
+        callback_handler = RedisLogCallbackHandler(session_id)
+        
+        async for event in agent_graph.astream(
+            initial_state, 
+            config={"callbacks": [callback_handler]}
+        ):
+            for node_name, node_output in event.items():
+                logger.info(f"Background processing node: {node_name}")
+                
+                # Add log entry
+                log_entry = f"[{datetime.now(timezone.utc).isoformat()}] Step completed: {node_name}"
+                state_store.append_log(session_id, log_entry)
+                
+                # Merge state
+                current_execution_state = {**current_execution_state, **node_output}
+                
+                # Update Redis State (only structural state, not logs)
+                update_data = {
+                    "status": "RUNNING",
+                    # "logs" field removed in favor of atomic list
+                    "current_node": node_name,
+                    "approval_required": False,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    # Store partial state in case of pause
+                    "state": current_execution_state
+                }
+                
+                # Check for Policy Gate Pause
+                if node_name == "policy_gate":
+                    approval_status = node_output.get("approval_status")
+                    if approval_status == "PENDING":
+                        state_store.append_log(session_id, f"[{datetime.now(timezone.utc).isoformat()}] ⏸️ PAUSED: Approval Required")
+                        update_data["status"] = "WAITING_APPROVAL"
+                        update_data["approval_required"] = True
+                        update_data["remediation_plan"] = current_execution_state.get("remediation_plan")
+                        
+                        # Store with 1 hour TTL
+                        state_store.set(session_id, update_data, ttl=3600)
+                        logger.info(f"Background execution paused for approval: {session_id}")
+                        return
+
+                state_store.set(session_id, update_data, ttl=3600)
+
+        # Completion
+        final_response = current_execution_state.get("final_response", "Investigation completed.")
+        state_store.append_log(session_id, f"[{datetime.now(timezone.utc).isoformat()}] ✅ Investigation Complete")
+        
+        state_store.set(session_id, {
+            "status": "COMPLETED",
+            "current_node": "end",
+            "approval_required": False,
+            "final_response": final_response,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "verification_result": current_execution_state.get("verification_result")
+        }, ttl=3600)
+        
+        logger.info(f"Background execution completed: {session_id}")
+
+    except Exception as e:
+        logger.error(f"Background execution failed: {e}")
+        state_store.append_log(session_id, f"[{datetime.now(timezone.utc).isoformat()}] ❌ Error: {str(e)}")
+        state_store.set(session_id, {
+            "status": "ERROR",
+            "error": str(e)
+        })
+
+# Resume graph execution from executor node
+    try:
+        # Ensure we have all required state fields
+        from .agent_state import AgentState
+        from langchain_core.messages import HumanMessage
+        
+        # Ensure messages exist
+        if "messages" not in current_state or not current_state["messages"]:
+            current_state["messages"] = [
+                HumanMessage(content="Remediation plan approved, resuming execution")
+            ]
+        
+        # Ensure metadata has tools
+        if "metadata" not in current_state:
+            current_state["metadata"] = {}
+        if "tools" not in current_state["metadata"]:
+            current_state["metadata"]["tools"] = tools
+        
+        final_response = ""
+        execution_results = None
+        verification_result = None
+        
+        async for event in agent_graph.astream(current_state):
+            for node_name, node_output in event.items():
+                logger.info(f"Resuming execution - Processing node: {node_name}")
+
+                # Capture execution results
+                if node_name == "executor":
+                    execution_results = node_output.get("execution_results")
+                    logger.info("Executor completed")
+                
+                # Capture verification results
+                if node_name == "verifier":
+                    verification_result = node_output.get("verification_result")
+                    logger.info("Verifier completed")
+                
+                # Capture final response
+                if node_name == "aggregate":
+                    final_response = node_output.get("final_response", "")
+                    logger.info("Resumed execution completed")
+
+        return {
+            "status": "approved",
+            "message": "Remediation plan approved and execution completed",
+            "execution_results": execution_results.model_dump() if hasattr(execution_results, "model_dump") else execution_results,
+            "verification_result": verification_result.model_dump() if hasattr(verification_result, "model_dump") else verification_result,
+            "final_response": final_response,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to resume execution after approval: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to resume execution: {str(e)}",
+        )
+
+
+
+async def run_graph_background_saas(
+    incident_id: uuid.UUID,
+    cluster_id: uuid.UUID,
+    alert_name: str
+):
+    """
+    SaaS-aware background execution.
+    Writes logs/results to the Postgres Database instead of just Redis.
+    """
+    # Use incident ID as session ID for internal state
+    session_id = str(incident_id)
+    global agent_graph, tools
+    
+    logger.info(f"▶️ Starting SaaS background graph execution for incident: {incident_id}")
+    
+    # Update Incident Status to INVESTIGATING
+    async with database.AsyncSessionLocal() as db:
+        stmt = (
+            models.Incident.__table__
+            .update()
+            .where(models.Incident.id == incident_id)
+            .values(status=IncidentStatus.INVESTIGATING)
+        )
+        await db.execute(stmt)
+        await db.commit()
+
+    try:
+        # Initialize Agent System if needed
+        await initialize_agent()
+        
+        # Initialize State
+        from .agent_state import AgentState
+        from langchain_core.messages import HumanMessage
+        
+        initial_state: AgentState = {
+            "messages": [HumanMessage(content=f"Investigate alert: {alert_name}")],
+            "ooda_phase": "OBSERVE",
+            "next": "investigation_swarm",
+            "agent_results": {},
+            "current_query": f"Investigate alert: {alert_name}",
+            "metadata": {
+                "llm_provider": os.getenv("LLM_PROVIDER", "groq"),
+                "tools": tools,
+                "cluster_id": str(cluster_id),
+                "incident_id": str(incident_id),
+            },
+            "requires_collaboration": True,
+            "agents_invoked": [],
+            "final_response": None,
+            "auto_approve_plan": True, # For automated SaaS flow, auto-approve for now
+            "session_id": session_id,
+            "user_id": "saas_user",
+        }
+        
+        # Redis Logging Setup (for real-time UI updates)
+        state_store.set(session_id, {
+            "status": "RUNNING",
+            "current_node": "start",
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        })
+        state_store.append_log(session_id, f"[{datetime.now(timezone.utc).isoformat()}] Investigation started for Incident {incident_id}")
+        
+        from .callbacks import RedisLogCallbackHandler
+        callback_handler = RedisLogCallbackHandler(session_id)
+        
+        current_execution_state = initial_state
+        
+        async for event in agent_graph.astream(
+            initial_state, 
+            config={"callbacks": [callback_handler]}
+        ):
+            for node_name, node_output in event.items():
+                logger.info(f"SaaS Background processing node: {node_name}")
+                
+                # Log entry
+                state_store.append_log(session_id, f"[{datetime.now(timezone.utc).isoformat()}] Step completed: {node_name}")
+                
+                # Merge state
+                current_execution_state = {**current_execution_state, **node_output}
+                
+                # Update Redis
+                state_store.set(session_id, {
+                    "status": "RUNNING",
+                    "current_node": node_name,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "state": current_execution_state
+                }, ttl=3600)
+
+        # Completion
+        final_response = current_execution_state.get("final_response", "Investigation completed.")
+        state_store.append_log(session_id, f"[{datetime.now(timezone.utc).isoformat()}] ✅ Investigation Complete")
+        
+        # Update Incident in Postgres
+        async with database.AsyncSessionLocal() as db:
+            stmt = (
+                models.Incident.__table__
+                .update()
+                .where(models.Incident.id == incident_id)
+                .values(
+                    status=IncidentStatus.RESOLVED,
+                    summary=final_response,
+                    resolved_at=datetime.utcnow()
+                )
+            )
+            await db.execute(stmt)
+            await db.commit()
+            
+        logger.info(f"SaaS Background execution completed for incident: {incident_id}")
+
+    except Exception as e:
+        logger.error(f"SaaS Background execution failed: {e}")
+        state_store.append_log(session_id, f"[{datetime.now(timezone.utc).isoformat()}] ❌ Error: {str(e)}")
+        
+        # Update Incident Status to OPEN (investigation failed)
+        async with database.AsyncSessionLocal() as db:
+             stmt = (
+                models.Incident.__table__
+                .update()
+                .where(models.Incident.id == incident_id)
+                .values(
+                    summary=f"Investigation Attempt Failed: {str(e)}",
+                    status=IncidentStatus.OPEN
+                )
+            )
+             await db.execute(stmt)
+             await db.commit()
+
+@app.post("/webhook/alert", status_code=202)
+async def webhook_alert(
+    alert_payload: Dict[str, Any], 
+    background_tasks: BackgroundTasks
+):
+    """
+    Self-Defense Mode: Prometheus Alertmanager webhook endpoint.
+    
+    When Prometheus fires an alert:
+    1. Create incident record in PostgreSQL (for SaaS Dashboard visibility)
+    2. Start LangGraph investigation immediately
+    3. Stream logs to SaaS via database updates
+    
+    Returns 202 Accepted immediately with incident_id.
+    """
+    global agent_graph, tools
+
+    logger.info("🚨 [SELF-DEFENSE MODE] Received Prometheus alert webhook")
+
+    try:
+        # Ensure agent is initialized
+        await initialize_agent()
+
+        # Extract alert
+        alerts = alert_payload.get("alerts", [])
+        if not alerts:
+            raise HTTPException(status_code=400, detail="No alerts found")
+        
+        alert = alerts[0]
+        alert_name = alert.get("labels", {}).get("alertname", "UnknownAlert")
+        severity_str = alert.get("labels", {}).get("severity", "warning")
+        description = alert.get("annotations", {}).get("description", "")
+        
+        # Map severity string to enum
+        from backend.models import IncidentSeverity
+        severity_map = {
+            "critical": IncidentSeverity.CRITICAL,
+            "high": IncidentSeverity.HIGH,
+            "warning": IncidentSeverity.MEDIUM,
+            "low": IncidentSeverity.LOW,
+        }
+        severity = severity_map.get(severity_str.lower(), IncidentSeverity.MEDIUM)
+        
+        # Get cluster ID from CLUSTER_TOKEN environment variable
+        cluster_token = os.getenv("CLUSTER_TOKEN", "")
+        cluster_id = None
+        
+        if cluster_token:
+            # Lookup cluster by token to get cluster_id
+            async with database.AsyncSessionLocal() as db:
+                cluster = await crud.get_cluster_by_token(db, cluster_token)
+                if cluster:
+                    cluster_id = cluster.id
+                    logger.info(f"📡 Linked to cluster: {cluster.name} (ID: {cluster_id})")
+        
+        if not cluster_id:
+            # Fallback: Run locally without SaaS tracking
+            logger.warning("⚠️ No CLUSTER_TOKEN set - running in local mode (no SaaS visibility)")
+            
+            # Build context and run old-style background execution
+            from .context_builder import ContextBuilder
+            context_builder = ContextBuilder(tools)
+            enriched_context = await context_builder.enrich_alert_context(alert)
+            
+            session_id = f"alert-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}"
+            incident_id_str = f"incident-{enriched_context.alert_name}-{session_id}"
+            
+            from .agent_state import AgentState, AlertContext
+            llm_provider = os.getenv("LLM_PROVIDER", "groq")
+            
+            initial_state: AgentState = {
+                "messages": [HumanMessage(content=f"Alert: {enriched_context.alert_name}")],
+                "ooda_phase": "OBSERVE",
+                "alert_context": enriched_context,
+                "next": "investigation_swarm",
+                "agent_results": {},
+                "current_query": f"Investigate alert: {enriched_context.alert_name}",
+                "metadata": {
+                    "llm_provider": llm_provider,
+                    "tools": tools,
+                },
+                "requires_collaboration": True,
+                "agents_invoked": [],
+                "final_response": None,
+                "auto_approve_plan": False,
+                "session_id": session_id,
+                "user_id": "alertmanager",
+                "incident_id": incident_id_str,
+                "thought_traces": {},
+            }
+            
+            background_tasks.add_task(
+                run_graph_background, 
+                session_id, 
+                initial_state, 
+                enriched_context.alert_name
+            )
+            
+            return {
+                "status": "accepted",
+                "mode": "local",
+                "session_id": session_id,
+                "message": "Investigation started (local mode - no SaaS visibility)",
+                "poll_url": f"/agent/state/{session_id}"
+            }
+        
+        # =====================================================
+        # SELF-DEFENSE MODE: Create Incident for SaaS Dashboard
+        # =====================================================
+        logger.info("🛡️ Creating incident record for SaaS Dashboard visibility...")
+        
+        async with database.AsyncSessionLocal() as db:
+            # Create incident in PostgreSQL
+            from backend import schemas
+            incident_data = schemas.IncidentCreate(
+                title=f"[AUTO] {alert_name}",
+                description=description or f"Automatically triggered by Prometheus alert: {alert_name}",
+                severity=severity
+            )
+            incident = await crud.create_incident(db, incident_data, cluster_id)
+            incident_id = incident.id
+            logger.info(f"✅ Incident created: {incident_id}")
+        
+        # 🚀 Start SaaS-aware LangGraph execution
+        background_tasks.add_task(
+            run_graph_background_saas,
+            incident_id=incident_id,
+            cluster_id=cluster_id,
+            alert_name=alert_name
+        )
+        
+        logger.info(f"🚀 [SELF-DEFENSE MODE] Investigation launched for incident: {incident_id}")
+        
+        return {
+            "status": "accepted",
+            "mode": "self_defense",
+            "incident_id": str(incident_id),
+            "cluster_id": str(cluster_id),
+            "message": "Self-Defense Mode activated - investigation started, SaaS Dashboard notified",
+            "dashboard_url": f"/clusters/{cluster_id}/incidents"
+        }
+
+    except Exception as e:
+        logger.error(f"Alert processing failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 async def invoke_sre_agent_async(prompt: str, provider: str = "groq") -> str:
@@ -240,7 +949,7 @@ async def invoke_sre_agent_async(prompt: str, provider: str = "groq") -> str:
 
     Args:
         prompt: The user prompt/query
-        provider: LLM provider ("groq" or "anthropic")
+        provider: LLM provider (only "groq" is supported)
 
     Returns:
         The agent's response as a string
@@ -281,7 +990,7 @@ def invoke_sre_agent(prompt: str, provider: str = "groq") -> str:
 
     Args:
         prompt: The user prompt/query
-        provider: LLM provider ("groq" or "anthropic")
+        provider: LLM provider (only "groq" is supported)
 
     Returns:
         The agent's response as a string
@@ -297,9 +1006,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="SRE Agent Runtime")
     parser.add_argument(
         "--provider",
-        choices=["groq", "anthropic"],
         default=os.getenv("LLM_PROVIDER", "groq"),
-        help="LLM provider to use (default: groq)",
+        help="LLM provider to use (default: groq, only groq is supported)",
     )
     parser.add_argument("--host", default="0.0.0.0", help="Host to bind to")
     parser.add_argument("--port", type=int, default=8080, help="Port to bind to")

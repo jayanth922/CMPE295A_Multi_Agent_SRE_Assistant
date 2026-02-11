@@ -69,9 +69,6 @@ ehthumbs.db
 Thumbs.db
 
 # Project specific
-.access_token
-.gateway_uri
-.credentials_provider
 .conversation_state.json
 .langgraph_conversation_state.json
 .multi_agent_conversation_state.json
@@ -80,18 +77,6 @@ Thumbs.db
 logs/
 reports/
 
-# Generated OpenAPI specifications (generated from templates)
-backend/openapi_specs/k8s_api.yaml
-backend/openapi_specs/logs_api.yaml
-backend/openapi_specs/metrics_api.yaml
-backend/openapi_specs/runbooks_api.yaml
-
-# Generated OpenAPI specifications (generated from templates)
-backend/openapi_specs/k8s_api.yaml
-backend/openapi_specs/logs_api.yaml
-backend/openapi_specs/metrics_api.yaml
-backend/openapi_specs/runbooks_api.yaml
-
 # Docker
 .dockerignore
 
@@ -99,18 +84,6 @@ backend/openapi_specs/runbooks_api.yaml
 config.yaml
 !config.yaml.example
 
-# Cognito setup artifacts
-deployment/.cognito_config
-
 # Temporary files
 *.tmp
 *.temp
-
-# Scratchpad and notes
-.scratchpad/
-docs/agentic-ai-architecture-assessment.md
-
-# Deployment artifacts
-deployment/.sre_agent_uri
-deployment/.env
-deployment/.agent_arn

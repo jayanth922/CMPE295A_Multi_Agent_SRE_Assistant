@@ -1,0 +1,2 @@
+mcp
+notion-client>=2.2.1

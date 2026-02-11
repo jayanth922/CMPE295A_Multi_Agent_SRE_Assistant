@@ -1,0 +1,9 @@
+resources:
+  - namespace.yaml
+  - sre-agent.configmap.yaml
+  - sre-agent.deployment.yaml
+  - sre-agent.service.yaml
+  - mcp.services.yaml
+  # Real MCP server deployments are in mcp_servers/*_real/k8s-deployment.yaml
+  # Deploy them separately or add to this kustomization if needed
+

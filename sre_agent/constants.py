@@ -17,16 +17,10 @@ logger = logging.getLogger(__name__)
 class ModelConfig(BaseModel):
     """Model configuration constants."""
 
-    # Groq model IDs (primary provider)
+    # Groq model IDs
     groq_model_id: str = Field(
-        default="llama-3.3-70b-versatile",
-        description="Default Groq model ID (llama-3.3-70b-versatile or llama-3.3-70b-specdec)",
-    )
-
-    # Anthropic model IDs (alternative provider)
-    anthropic_model_id: str = Field(
-        default="claude-sonnet-4-20250514",
-        description="Default Anthropic Claude model ID",
+        default="llama-3.1-8b-instant",
+        description="Default Groq model ID",
     )
 
     # Model parameters
@@ -51,11 +45,15 @@ class ModelConfig(BaseModel):
         description="Max tokens for output formatter LLM calls",
     )
 
-
-class AWSConfig(BaseModel):
-    """AWS configuration constants."""
-
-    default_region: str = Field(default="us-east-1", description="Default AWS region")
+    # Ollama settings
+    ollama_base_url: str = Field(
+        default="http://ollama:11434",
+        description="Base URL for Ollama service",
+    )
+    ollama_model: str = Field(
+        default="llama3.2",
+        description="Ollama model to use",
+    )
 
 
 class TimeoutConfig(BaseModel):
@@ -213,6 +211,12 @@ class AgentsConstant(BaseModel):
                 description="Provides operational procedures and troubleshooting guides",
                 agent_type="runbooks",
             ),
+            "github": AgentMetadata(
+                actor_id="github-agent",
+                display_name="Code Change Intelligence Agent",
+                description="Correlates code changes (commits, PRs) with incidents and identifies bad commits",
+                agent_type="github",
+            ),
             "supervisor": AgentMetadata(
                 actor_id="supervisor-agent",
                 display_name="Supervisor Agent",
@@ -235,11 +239,8 @@ class SREConstants:
         from .constants import SREConstants
 
         # Access model configuration
-        model_id = SREConstants.model.anthropic_model_id
+        model_id = SREConstants.model.groq_model_id
         temperature = SREConstants.model.default_temperature
-
-        # Access AWS configuration
-        region = SREConstants.aws.default_region
 
         # Access timeout configuration
         timeout = SREConstants.timeouts.graph_execution_timeout_seconds
@@ -253,7 +254,6 @@ class SREConstants:
     """
 
     model: ModelConfig = ModelConfig()
-    aws: AWSConfig = AWSConfig()
     timeouts: TimeoutConfig = TimeoutConfig()
     prompts: PromptConfig = PromptConfig()
     app: ApplicationConfig = ApplicationConfig()
@@ -264,33 +264,34 @@ class SREConstants:
         """Get model configuration for a specific provider.
 
         Args:
-            provider: LLM provider ("groq" or "anthropic")
+            provider: LLM provider (only "groq" is supported)
             **kwargs: Additional configuration overrides
 
         Returns:
             Dictionary with model configuration
         """
-        if provider == "groq":
+        if provider == "ollama":
             return {
-                "model_id": kwargs.get("model_id", cls.model.groq_model_id),
-                "max_tokens": kwargs.get("max_tokens", cls.model.default_max_tokens),
+                "model_id": kwargs.get("model_id", cls.model.ollama_model),
+                "base_url": kwargs.get("base_url", cls.model.ollama_base_url),
                 "temperature": kwargs.get("temperature", cls.model.default_temperature),
             }
-        elif provider == "anthropic":
-            return {
-                "model_id": kwargs.get("model_id", cls.model.anthropic_model_id),
-                "max_tokens": kwargs.get("max_tokens", cls.model.default_max_tokens),
-                "temperature": kwargs.get("temperature", cls.model.default_temperature),
-            }
-        else:
-            raise ValueError(f"Unsupported provider: {provider}")
+        
+        if provider != "groq":
+            raise ValueError(f"Unsupported provider: {provider}. Supported: 'groq', 'ollama'.")
+
+        return {
+            "model_id": kwargs.get("model_id", cls.model.groq_model_id),
+            "max_tokens": kwargs.get("max_tokens", cls.model.default_max_tokens),
+            "temperature": kwargs.get("temperature", cls.model.default_temperature),
+        }
 
     @classmethod
     def get_output_formatter_config(cls, provider: str, **kwargs) -> dict:
         """Get model configuration for output formatter.
 
         Args:
-            provider: LLM provider ("groq" or "anthropic")
+            provider: LLM provider (only "groq" is supported)
             **kwargs: Additional configuration overrides
 
         Returns:
@@ -318,10 +319,8 @@ constants = SREConstants()
 
 # Legacy support - individual constants for backward compatibility if needed
 GROQ_MODEL_ID = constants.model.groq_model_id
-ANTHROPIC_MODEL_ID = constants.model.anthropic_model_id
 DEFAULT_TEMPERATURE = constants.model.default_temperature
 DEFAULT_MAX_TOKENS = constants.model.default_max_tokens
-DEFAULT_AWS_REGION = constants.aws.default_region
 GRAPH_EXECUTION_TIMEOUT_SECONDS = constants.timeouts.graph_execution_timeout_seconds
 AGENT_MODEL_NAME = constants.app.agent_model_name
 DEFAULT_OUTPUT_DIR = constants.app.default_output_dir

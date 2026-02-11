@@ -42,11 +42,19 @@ agents:
       - get_escalation_procedures
       - get_common_resolutions
 
-# Global tools available to all agents
-# Tools are now discovered from MCP servers (K8s, Logs, Metrics, Runbooks)
-global_tools: []
+  github_agent:
+    name: "Code Change Intelligence Agent"
+    description: "Correlates code changes (commits, PRs) with incidents and identifies bad commits"
+    tools:
+      - list_commits
+      - get_commit
+      - list_pull_requests
+      - get_pull_request
+      - create_revert_pr
+      - comment_on_pr
+      - revert_pr
 
-# AWS Configuration (for in-cluster AWS API access if needed)
-aws:
-  # region: "us-east-1"  # AWS region (uncomment to override)
+# Global tools available to all agents
+# Tools are now discovered from MCP servers (K8s, Logs, Metrics, Runbooks, GitHub, Memory)
+global_tools: []
 

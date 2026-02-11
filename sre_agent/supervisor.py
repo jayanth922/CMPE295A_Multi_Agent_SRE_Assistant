@@ -3,7 +3,7 @@
 import json
 import logging
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional
 
@@ -498,6 +498,99 @@ You can:
 
             final_response = response.content
 
-        # Memory conversation storage and investigation summary removed
+        # Store successful resolution in memory (if verification passed)
+        try:
+            verification_result = state.get("verification_result")
+            if verification_result:
+                # Handle both Pydantic model and dict
+                if hasattr(verification_result, "status"):
+                    status = verification_result.status
+                    improvement = getattr(verification_result, "improvement_percentage", 0.0)
+                elif isinstance(verification_result, dict):
+                    status = verification_result.get("status")
+                    improvement = verification_result.get("improvement_percentage", 0.0)
+                else:
+                    status = None
+
+                if status == "RESOLVED":
+                    # Try MCP memory server first
+                    tools = metadata.get("tools", [])
+                    store_tool = None
+                    for tool in tools:
+                        tool_name = getattr(tool, "name", "")
+                        if "store_incident_memory" in tool_name.lower():
+                            store_tool = tool
+                            break
+
+                    incident_id = state.get("incident_id", f"incident-{datetime.now(timezone.utc).isoformat()}")
+                    alert_context = state.get("alert_context")
+                    remediation_plan = state.get("remediation_plan")
+                    reflector_analysis = state.get("reflector_analysis")
+
+                    # Extract hypothesis
+                    hypothesis = "Unknown"
+                    if reflector_analysis:
+                        if hasattr(reflector_analysis, "hypothesis"):
+                            hypothesis = reflector_analysis.hypothesis
+                        elif isinstance(reflector_analysis, dict):
+                            hypothesis = reflector_analysis.get("hypothesis", "Unknown")
+
+                    # Extract plan hypothesis
+                    plan_hypothesis = "Unknown"
+                    if remediation_plan:
+                        if hasattr(remediation_plan, "hypothesis"):
+                            plan_hypothesis = remediation_plan.hypothesis
+                        elif isinstance(remediation_plan, dict):
+                            plan_hypothesis = remediation_plan.get("hypothesis", "Unknown")
+
+                    # Build incident text
+                    alert_name = "Unknown"
+                    if alert_context:
+                        if hasattr(alert_context, "alert_name"):
+                            alert_name = alert_context.alert_name
+                        elif isinstance(alert_context, dict):
+                            alert_name = alert_context.get("alert_name", "Unknown")
+
+                    incident_text = f"""
+Alert: {alert_name}
+Hypothesis: {hypothesis}
+Resolution: {plan_hypothesis}
+Verification: {status}
+Improvement: {improvement:.1f}%
+                    """.strip()
+
+                    metadata_dict = {
+                        "alert_name": alert_name,
+                        "resolution": plan_hypothesis,
+                        "improvement": improvement,
+                    }
+
+                    if store_tool:
+                        # Use MCP memory server
+                        import json
+                        metadata_json = json.dumps(metadata_dict)
+                        logger.info("💾 Storing incident via MCP memory server")
+                        if hasattr(store_tool, "ainvoke"):
+                            await store_tool.ainvoke({
+                                "incident_text": incident_text,
+                                "incident_id": incident_id,
+                                "metadata": metadata_json,
+                            })
+                        else:
+                            store_tool.invoke({
+                                "incident_text": incident_text,
+                                "incident_id": incident_id,
+                                "metadata": metadata_json,
+                            })
+                        logger.info(f"✅ Stored successful resolution in memory via MCP: {incident_id}")
+                    else:
+                        # Fallback to direct memory store
+                        from .memory_store import get_memory_store
+                        memory = get_memory_store()
+                        if memory.is_available():
+                            memory.store_incident(incident_text, incident_id, metadata_dict)
+                            logger.info(f"✅ Stored successful resolution in memory: {incident_id}")
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to store incident in memory: {e}")
 
         return {"final_response": final_response, "next": "FINISH"}

@@ -1,9 +1,38 @@
 #!/usr/bin/env python3
 
 import logging
+import json
 import os
-from typing import Optional
+import sys
+from datetime import datetime
+from typing import Optional, Any
 
+class JSONFormatter(logging.Formatter):
+    """
+    Formatter that outputs JSON strings for all logs.
+    """
+    def format(self, record: logging.LogRecord) -> str:
+        log_obj = {
+            "timestamp": datetime.utcfromtimestamp(record.created).isoformat() + "Z",
+            "level": record.levelname,
+            "message": record.getMessage(),
+            "logger": record.name,
+            "module": record.module,
+            "function": record.funcName,
+            "line": record.lineno,
+            "process": record.process,
+            "thread": record.threadName,
+        }
+
+        # Add exception info if present
+        if record.exc_info:
+            log_obj["exception"] = self.formatException(record.exc_info)
+        
+        # Add extra fields from record (if any)
+        if hasattr(record, "extra"):
+             log_obj.update(record.extra)
+
+        return json.dumps(log_obj)
 
 def _configure_http_loggers(debug_enabled: bool = False) -> None:
     """Configure HTTP client loggers based on debug setting."""
@@ -12,8 +41,6 @@ def _configure_http_loggers(debug_enabled: bool = False) -> None:
         "httpcore",
         "streamable_http",
         "mcp.client.streamable_http",
-        "anthropic._client",
-        "anthropic._base_client",
     ]
 
     for logger_name in http_loggers:
@@ -25,7 +52,7 @@ def _configure_http_loggers(debug_enabled: bool = False) -> None:
 
 
 def configure_logging(debug: Optional[bool] = None) -> bool:
-    """Configure logging with basicConfig based on debug setting.
+    """Configure logging with JSON formatter based on debug setting.
 
     Args:
         debug: Enable debug logging. If None, checks DEBUG environment variable.
@@ -40,12 +67,19 @@ def configure_logging(debug: Optional[bool] = None) -> bool:
     # Set log level based on debug setting
     log_level = logging.DEBUG if debug else logging.INFO
 
-    # Configure logging with basicConfig
-    logging.basicConfig(
-        level=log_level,
-        # Define log message format
-        format="%(asctime)s,p%(process)s,{%(filename)s:%(lineno)d},%(levelname)s,%(message)s",
-    )
+    # Create handler with JSON Formatter
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setFormatter(JSONFormatter())
+
+    # Configure root logger
+    root_logger = logging.getLogger()
+    root_logger.setLevel(log_level)
+    
+    # Remove existing handlers to avoid duplicates/mixed formats
+    for h in root_logger.handlers[:]:
+        root_logger.removeHandler(h)
+    
+    root_logger.addHandler(handler)
 
     # Configure HTTP loggers
     _configure_http_loggers(debug)
@@ -56,6 +90,9 @@ def configure_logging(debug: Optional[bool] = None) -> bool:
         mcp_logger.setLevel(logging.DEBUG)
     else:
         mcp_logger.setLevel(logging.WARNING)
+    
+    # Force sqlalchemy to be less noisy unless debug
+    logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
 
     return debug
 

@@ -1,0 +1,359 @@
+version: '3.8'
+
+services:
+  # ============================================
+  # Infrastructure Services (State & AI)
+  # ============================================
+
+  redis:
+    image: redis:7-alpine
+    container_name: redis
+    hostname: redis
+    ports:
+      - "6380:6379" # host 6380 to avoid conflict with local Redis on 6379
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    networks:
+      sre-network:
+        aliases:
+          - redis
+    restart: unless-stopped
+    healthcheck:
+      test: [ "CMD", "redis-cli", "ping" ]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  postgres:
+    image: postgres:15-alpine
+    container_name: postgres
+    hostname: postgres
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER:-sre_user}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-sre_password}
+      - POSTGRES_DB=${POSTGRES_DB:-sre_platform}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      sre-network:
+        aliases:
+          - postgres
+    restart: unless-stopped
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-sre_user} -d ${POSTGRES_DB:-sre_platform}" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: qdrant
+    hostname: qdrant
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    networks:
+      sre-network:
+        aliases:
+          - qdrant
+    restart: unless-stopped
+    # No healthcheck: official image is minimal (no wget/curl). Use service_started in depends_on.
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+    hostname: ollama
+    ports:
+      - "11435:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    networks:
+      sre-network:
+        aliases:
+          - ollama
+    restart: unless-stopped
+    # Use GPU if available (uncomment if you have NVIDIA GPU setup for Docker)
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+
+    # ============================================
+    # MCP Servers (Real Implementation)
+    # ============================================
+
+  mcp-k8s-real:
+    build:
+      context: ../mcp_servers/k8s_real
+      dockerfile: Dockerfile
+    container_name: mcp-k8s-real
+    hostname: mcp-k8s-real
+    ports:
+      - "3010:3000"
+    volumes:
+      - ${HOME}/.kube:/root/.kube:ro # Mount kubeconfig from host
+    networks:
+      sre-network:
+        aliases:
+          - mcp-k8s-real
+    restart: unless-stopped
+    environment:
+      - HOST=0.0.0.0
+      - HTTP_PORT=3000
+      - KUBERNETES_API_SERVER_HOST=host.docker.internal # Allow connection to host's Kind cluster
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "-I", "-s", "http://localhost:3000/sse" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  mcp-prometheus-real:
+    build:
+      context: ../mcp_servers/prometheus_real
+      dockerfile: Dockerfile
+    container_name: mcp-prometheus-real
+    hostname: mcp-prometheus-real
+    ports:
+      - "3001:3000"
+    environment:
+      # Expects external Prometheus URL
+      - PROMETHEUS_URL=${PROMETHEUS_URL}
+      - HOST=0.0.0.0
+      - HTTP_PORT=3000
+    networks:
+      sre-network:
+        aliases:
+          - mcp-prometheus-real
+    # depends_on removed (Prometheus is external)
+    restart: unless-stopped
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "-I", "-s", "http://localhost:3000/sse" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  mcp-loki-real:
+    build:
+      context: ../mcp_servers/loki_real
+      dockerfile: Dockerfile
+    container_name: mcp-loki-real
+    hostname: mcp-loki-real
+    ports:
+      - "3002:3000"
+    environment:
+      # Expects external Loki URL
+      - LOKI_URL=${LOKI_URL}
+      - HOST=0.0.0.0
+      - HTTP_PORT=3000
+    networks:
+      sre-network:
+        aliases:
+          - mcp-loki-real
+    # depends_on removed (Loki is external)
+    restart: unless-stopped
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "-I", "-s", "http://localhost:3000/sse" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  mcp-github-real:
+    build:
+      context: ../mcp_servers/github_real
+      dockerfile: Dockerfile
+    container_name: mcp-github-real
+    hostname: mcp-github-real
+    ports:
+      - "3003:3000"
+    environment:
+      - GITHUB_TOKEN=${GITHUB_TOKEN}
+      - HOST=0.0.0.0
+      - HTTP_PORT=3000
+    networks:
+      sre-network:
+        aliases:
+          - mcp-github-real
+    restart: unless-stopped
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "-I", "-s", "http://localhost:3000/sse" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  mcp-notion-real:
+    build:
+      context: ../mcp_servers/notion_real
+      dockerfile: Dockerfile
+    container_name: mcp-notion-real
+    hostname: mcp-notion-real
+    ports:
+      - "3004:3000"
+    environment:
+      - NOTION_API_KEY=${NOTION_API_KEY}
+      - NOTION_DATABASE_ID=${NOTION_RUNBOOK_DATABASE_ID}
+      - HOST=0.0.0.0
+      - HTTP_PORT=3000
+    networks:
+      sre-network:
+        aliases:
+          - mcp-notion-real
+    restart: unless-stopped
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "-I", "-s", "http://localhost:3000/sse" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  mcp-memory-real:
+    build:
+      context: ../mcp_servers/memory_real
+      dockerfile: Dockerfile
+    container_name: mcp-memory-real
+    hostname: mcp-memory-real
+    ports:
+      - "3005:3000"
+    environment:
+      - QDRANT_URL=http://qdrant:6333
+      - HOST=0.0.0.0
+      - HTTP_PORT=3000
+    networks:
+      sre-network:
+        aliases:
+          - mcp-memory-real
+    depends_on:
+      qdrant:
+        condition: service_started
+    restart: unless-stopped
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "-I", "-s", "http://localhost:3000/sse" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ============================================
+  # SRE Agent (The Brain)
+  # ============================================
+
+  sre-agent:
+    build:
+      context: ../
+      dockerfile: Dockerfile
+    container_name: sre-agent
+    hostname: sre-agent
+    ports:
+      - "8080:8080" # FastAPI API
+    environment:
+      # LLM Provider
+      - LLM_PROVIDER=ollama
+      - OLLAMA_BASE_URL=http://ollama:11434
+      - OLLAMA_MODEL=tinyllama
+      # - GROQ_API_KEY=${GROQ_API_KEY} # Not needed for Ollama
+
+      # Infrastructure URLs
+      # Agent will use these to connect to external tools
+      - PROMETHEUS_URL=${PROMETHEUS_URL}
+      - LOKI_URL=${LOKI_URL}
+      - REDIS_URL=redis://redis:6379/0
+      - QDRANT_URL=http://qdrant:6333
+      # Target App URL removed (Decoupled)
+
+      # MCP Server URIs (for MCP client connections)
+      - MCP_K8S_URI=http://mcp-k8s-real:3000/sse
+      - MCP_LOGS_URI=http://mcp-loki-real:3000/sse
+      - MCP_METRICS_URI=http://mcp-prometheus-real:3000/sse
+      - MCP_RUNBOOKS_URI=http://mcp-notion-real:3000/sse
+      - MCP_GITHUB_URI=http://mcp-github-real:3000/sse
+      - MCP_MEMORY_URI=http://mcp-memory-real:3000/sse
+
+      # Python environment
+      - PYTHONPATH=/app
+      - PYTHONDONTWRITEBYTECODE=1
+      - PYTHONUNBUFFERED=1
+      - DEBUG=${DEBUG:-false}
+
+      # Job Poller Configuration (for Agent-SaaS Integration)
+      - CLUSTER_TOKEN=${CLUSTER_TOKEN:-}
+      - SAAS_URL=http://localhost:8080
+    volumes:
+      # Hot-reload for development (optional)
+      - ../sre_agent:/app/sre_agent:ro
+      - ../backend:/app/backend:rw
+      - ../mcp_servers:/app/mcp_servers:ro
+      - ../alembic.ini:/app/alembic.ini:ro
+    networks:
+      sre-network:
+        aliases:
+          - sre-agent
+    depends_on:
+      redis:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+      # MCP Tool Servers (for autonomous capabilities)
+      mcp-k8s-real:
+        condition: service_healthy
+      mcp-github-real:
+        condition: service_healthy
+      mcp-prometheus-real:
+        condition: service_healthy
+      mcp-loki-real:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: [ "CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8080/ping" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  dashboard:
+    build:
+      context: ../dashboard
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    volumes:
+      - ../dashboard:/app
+      - /app/node_modules
+    environment:
+      - API_URL=http://sre-agent:8080
+    depends_on:
+      - sre-agent
+    networks:
+      sre-network:
+        aliases:
+          - dashboard
+  # Streamlit Dashboard (Legacy) - REMOVED
+
+  # ============================================
+  # Networks
+  # ============================================
+networks:
+  sre-network:
+    driver: bridge
+    name: sre-agent-network
+    ipam:
+      driver: default
+
+# ============================================
+# Volumes
+# ============================================
+volumes:
+  redis_data:
+    driver: local
+  qdrant_data:
+    driver: local
+  ollama_data:
+    driver: local
+  postgres_data:
+    driver: local

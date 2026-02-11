@@ -12,6 +12,7 @@ from langchain_core.tools import BaseTool
 from langgraph.prebuilt import create_react_agent
 
 from .agent_state import AgentState
+from .audit_context import set_audit_context, clear_audit_context
 from .constants import AgentMetadata
 from .llm_utils import create_llm_with_error_handling
 from .prompt_loader import prompt_loader
@@ -148,6 +149,8 @@ class BaseAgentNode:
             return "metrics"
         elif "runbooks" in name_lower or "operational" in name_lower:
             return "runbooks"
+        elif "github" in name_lower or "code" in name_lower or "git" in name_lower:
+            return "github"
         else:
             logger.warning(f"Unknown agent type for agent: {self.name}")
             return "unknown"
@@ -177,6 +180,23 @@ class BaseAgentNode:
 
             # Stream the agent execution to capture tool calls with timeout
             logger.info(f"{self.name} - Starting agent execution")
+
+            # Set Audit Context
+            incident_id = None
+            if state.get("alert_context"):
+                # alert_context is a Pydantic model, or dict? 
+                # Check type or try access
+                ac = state.get("alert_context")
+                if hasattr(ac, "incident_id"):
+                     incident_id = str(ac.incident_id) if ac.incident_id else None
+                # If incident_id not directly on alert_context, maybe we need to pass it in state separately 
+                # or derive it. For now, we'll try to use what we have.
+            
+            # Also try to get from metadata if set by higher level
+            if not incident_id:
+                incident_id = state.get("metadata", {}).get("incident_id")
+            
+            set_audit_context(incident_id=incident_id, agent_name=self.name)
 
             try:
                 # Add timeout to prevent infinite hanging (120 seconds)
@@ -300,6 +320,8 @@ class BaseAgentNode:
                 },
                 "agents_invoked": state.get("agents_invoked", []) + [self.name],
             }
+        finally:
+            clear_audit_context()
 
 
 def create_kubernetes_agent(
@@ -360,6 +382,22 @@ def create_runbooks_agent(
     return BaseAgentNode(
         name="Operational Runbooks Agent",  # Fallback for backward compatibility
         description="Provides operational procedures and troubleshooting guides",  # Fallback
+        tools=filtered_tools,
+        agent_metadata=agent_metadata,
+        **kwargs,
+    )
+
+
+def create_github_agent(
+    tools: List[BaseTool], agent_metadata: AgentMetadata = None, **kwargs
+) -> BaseAgentNode:
+    """Create code change intelligence agent (GitHub)."""
+    config = _load_agent_config()
+    filtered_tools = _filter_tools_for_agent(tools, "github_agent", config)
+
+    return BaseAgentNode(
+        name="Code Change Intelligence Agent",  # Fallback for backward compatibility
+        description="Correlates code changes (commits, PRs) with incidents and identifies bad commits",  # Fallback
         tools=filtered_tools,
         agent_metadata=agent_metadata,
         **kwargs,

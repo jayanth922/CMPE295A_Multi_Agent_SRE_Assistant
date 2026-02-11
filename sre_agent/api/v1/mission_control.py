@@ -1,0 +1,178 @@
+from typing import List, Optional, Dict, Any
+import uuid
+
+from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy.orm import Session
+from sqlalchemy import desc
+from langgraph.types import Command
+
+from backend import database
+from sre_agent.models import AgentAuditLog
+# agent_graph will be imported lazily to avoid circular dependency
+
+router = APIRouter(
+    prefix="/incidents",
+    tags=["mission_control"],
+)
+
+# Dependency to get the graph (to be implemented/refactored if needed)
+# For now, we'll try to import it, but we might need to handle the circular dependency logic.
+# A better way is to move the global `agent_graph` to a separate module 'sre_agent.globals'
+# But let's try to access it via a helper or assume it's available.
+
+def get_agent_graph():
+    from sre_agent.agent_runtime import agent_graph
+    if agent_graph is None:
+        raise HTTPException(status_code=503, detail="Agent system not initialized")
+    return agent_graph
+
+@router.get("/{incident_id}/logs")
+def get_incident_audit_logs(
+    incident_id: str,
+    db: Session = Depends(database.SessionLocal) # Sync session for simplicity or Async
+):
+    """
+    Get audit logs for a specific incident.
+    Using Sync session here because AuditLogs were written synchronously.
+    """
+    # Fetch Audit Logs (Tools)
+    audit_logs = db.query(AgentAuditLog).filter(
+        AgentAuditLog.incident_id == incident_id
+    ).order_by(desc(AgentAuditLog.timestamp)).all()
+    
+    # Fetch Redis Logs (Thoughts/Steps)
+    from sre_agent.agent_runtime import state_store
+    redis_logs = state_store.get_logs(incident_id)
+    
+    # Convert Redis strings to structured objects
+    structured_redis_logs = []
+    
+    for log_str in redis_logs:
+        log_entry = {
+            "id": str(uuid.uuid4()),
+            "timestamp": None,
+            "agent_name": "Supervisor",
+            "tool_name": "System",
+            "tool_args": log_str,
+            "status": "INFO",
+            "result": None,
+            "error_message": None
+        }
+        
+        # Try to extract timestamp: [2023-10-27T10:00:00Z] Message...
+        try:
+            if log_str.startswith("[") and "]" in log_str:
+                ts_end = log_str.find("]")
+                ts_str = log_str[1:ts_end]
+                # Check if it looks like an ISO timestamp (simple check)
+                if len(ts_str) > 10 and ("T" in ts_str or " " in ts_str):
+                     # Parse to ensure validity, but keep string for UI
+                     # fromisoformat might fail on 'Z', so we might need replacement if < 3.11
+                     from datetime import datetime
+                     # Minimal validation
+                     log_entry["timestamp"] = ts_str
+                     # Clean the message: Remove [timestamp] prefix
+                     # [timestamp] Message -> Message
+                     if len(log_str) > ts_end + 1:
+                         log_entry["tool_args"] = log_str[ts_end + 1:].strip()
+        except Exception:
+            pass
+            
+        structured_redis_logs.append(log_entry)
+
+    combined_logs = []
+    for log in audit_logs:
+        combined_logs.append({
+            "id": str(log.id),
+            "timestamp": log.timestamp.isoformat(),
+            "agent_name": log.agent_name,
+            "tool_name": log.tool_name,
+            "tool_args": log.tool_args,
+            "status": log.status,
+            "result": log.result,
+            "error_message": log.error_message
+        })
+        
+    for r_log in structured_redis_logs:
+        combined_logs.append(r_log)
+    
+    # Sort combined logs by timestamp
+    def get_sort_key(x):
+        ts = x.get("timestamp")
+        if not ts:
+            return "" 
+        return ts
+        
+    combined_logs.sort(key=get_sort_key, reverse=True)
+        
+    return combined_logs
+
+@router.get("/{incident_id}/status")
+async def get_incident_status(incident_id: str):
+    """
+    Get the current status of the LangGraph execution for this incident.
+    """
+    graph = get_agent_graph()
+    config = {"configurable": {"thread_id": incident_id}}
+    
+    try:
+        current_state = await graph.aget_state(config)
+        
+        if not current_state.values:
+             return {"status": "UNKNOWN", "next": []}
+
+        next_ops = current_state.next
+        
+        # Check if we are waiting for input (interrupted)
+        is_paused = False
+        if next_ops:
+            # If next step is 'execute_action' and we have tasks, it might be paused via interrupt_before
+            # LangGraph StateSnapshot has 'tasks' which are pending
+            if current_state.tasks:
+                first_task = current_state.tasks[0]
+                if first_task.interrupts:
+                    is_paused = True
+                    
+        return {
+            "status": "WAITING_APPROVAL" if is_paused else "RUNNING",
+            "next": next_ops,
+            "values": current_state.values,
+            "created_at": current_state.created_at
+        }
+    except Exception as e:
+        # State might not exist yet
+        return {"status": "NOT_STARTED", "error": str(e)}
+
+@router.post("/{incident_id}/approve")
+async def approve_incident_action(incident_id: str):
+    """
+    Resume execution with approval.
+    """
+    graph = get_agent_graph()
+    config = {"configurable": {"thread_id": incident_id}}
+    
+    try:
+        # Resume the graph
+        # output = await graph.ainvoke(Command(resume="APPROVE"), config)
+        # Actually, for resuming from interrupt, we update state or just invoke with Command
+        
+        # NOTE: If we are just resuming, we can use None or a specific value expected by the graph
+        # If using interrupt_before, we typically just run it again?
+        # No, we need to invoke. Providing Command(resume="APPROVE") is correct if we used interrupt(payload)
+        # If we used interrupt_before=["node"], we just need to continue.
+        # But usually 'interrupt_before' stops *before* the node. To run it, we just invoke(None, config)?
+        # Or invoke(Command(resume=...), ...) if we want to change behavior?
+        
+        # Let's assume we used a simple interrupt_before logic.
+        # But if the user request says: "Resume execution using graph.invoke(Command(resume='APPROVE'), config)"
+        # I will follow that instruction.
+        
+        background_task_run = asyncio.create_task(
+            graph.ainvoke(Command(resume="APPROVE"), config)
+        )
+        # We don't await full completion to return fast
+        
+        return {"status": "RESUMED"}
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
