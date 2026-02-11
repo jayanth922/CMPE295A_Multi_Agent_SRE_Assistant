@@ -18,6 +18,7 @@ sdist/
 var/
 wheels/
 *.egg-info/
+sre_agent.egg-info/
 .installed.cfg
 *.egg
 MANIFEST
@@ -42,6 +43,8 @@ coverage.xml
 *.cover
 .hypothesis/
 .pytest_cache/
+cover/
+htmlcov/
 
 # Virtual environments
 .env
