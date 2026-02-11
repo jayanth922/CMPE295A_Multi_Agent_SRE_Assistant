@@ -1,120 +1,120 @@
-# Autonomous SRE Platform (Agentic)
+# Autonomous SRE Platform
 
 ![Status](https://img.shields.io/badge/Status-Production%20Ready-green)
 ![Architecture](https://img.shields.io/badge/Architecture-Event%20Driven-blue)
-![Agents](https://img.shields.io/badge/Agents-LangGraph-orange)
+![License](https://img.shields.io/badge/License-MIT-purple)
 
-An **Autonomous Site Reliability Engineering (SRE) Agent** that doesn't just alert you—it investigates, plans, and fixes incidents using production-grade tools.
-
-Built on **LangGraph** (Orchestration) and the **Model Context Protocol (MCP)** (Infrastructure Access).
+An event-driven Site Reliability Engineering (SRE) platform that automates incident response using **LangGraph** orchestration and the **Model Context Protocol (MCP)**. This system observes infrastructure signals, investigates root causes, plans remediation via policy gates, and executes corrective actions on live environments.
 
 ---
 
-## 🚀 Key Features
+## 🏗 System Architecture
 
-*   **The "Senior SRE" Brain:** Implements the OODA loop (Observe, Orient, Decide, Act) to solve problems like a human expert.
-*   **Real Infrastructure, No Mocks:** Connects to *actual* Kubernetes clusters, GitHub repos, and Prometheus metrics via secure MCP tunnels.
-*   **Safety Guardrails:** A "Policy Engine" reviews every plan. Risky actions (like `revert_commit`) require human approval via the dashboard.
-*   **Mission Control:** A real-time UI to watch the agent "think" and execute.
+The platform operates as a closed-loop control system (OODA Loop):
 
----
-
-## 📖 How It Works (Deep Dive)
-
-### The Workflow: Anatomy of an Incident
-
-1.  **Trigger 🚨:** A high-latency alert fires in Prometheus. It hits the agent's webhook.
-2.  **Observe 🔍:** The **Supervisor** wakes up the **K8s Agent** and **Logs Agent**.
-    *   *Agent:* "Get me logs for the `frontend` pod."
-    *   *MCP:* Returns the crash log: `NullPointerException in header.tsx`.
-3.  **Orient 💡:** The **Reflector** correlates findings.
-    *   *Hypothesis:* "Commit `x89s0` (merged 5 mins ago) broke the header component."
-4.  **Decide 🛡️:** The **Planner** proposes a fix: "Revert commit `x89s0`."
-    *   *Policy Check:* "Reverting code is High Risk. Requesting Human Approval."
-5.  **Act ⚡:** You see the request on the Dashboard and click **Approve**.
-    *   The **Executor** calls the **GitHub MCP** to open and merge the revert PR.
-6.  **Verify ✅:** The **Verifier** confirms metric stability.
+| Component | Responsibility | Technology |
+|-----------|----------------|------------|
+| **SRE Agent** | Core orchestration engine. Manages state, decision-making, and tool delegation. | Python, FastAPI, LangGraph |
+| **MCP Servers** | Isolated sidecars providing secure access to infrastructure tools (K8s, GitHub, Prometheus). | Python, FastMCP, Docker |
+| **Dashboard** | Real-time "Mission Control" UI for observing agent logs and approving sensitive actions. | Next.js, React, WebSocket |
+| **State Store** | Persistence for incident history (`Postgres`) and active session state (`Redis`). | PostgreSQL, Redis |
+| **Memory** | Semantic search for runbooks and past incident context. | Qdrant (Vector DB) |
 
 ---
 
-## 📂 The File Guide (What is all this?)
+## ✨ Features
 
-You asked for a complete breakdown. Here is every file and folder explained:
-
-### 🛠️ Developer Tools (Why do I need these?)
-*   **`Makefile`:** Think of this as your "Command Shortcuts". Instead of typing long commands, you just type:
-    *   `make format`: Beautifies your code (using Black).
-    *   `make lint`: Checks for bugs/style issues (using Ruff).
-    *   `make test`: Runs functionality tests (using Pytest).
-    *   *Why?* It ensures every developer on the team maintains the same high code quality standard.
-*   **`pyproject.toml`:** The configuration center for Python. It lists all libraries (dependencies) the project needs and configures the tools used in the Makefile.
-*   **`.gitignore`:** Tells Git which files to *ignore* (like passwords or temporary build folders).
-
-### 🧠 `sre_agent/` (The Brain)
-The core Python application.
-*   `agent_runtime.py`: The web server (FastAPI) that receives alerts.
-*   `graph_builder.py`: **The most important file.** It defines the "Brain wiring" (the LangGraph state machine).
-*   `agent_nodes.py`: The logic for each "step" of thinking (Investigator, Planner, Executor).
-*   `agent_state.py`: The "Short-term Memory" where the agent writes its findings during an incident.
-*   `policy_engine.py`: The "Safety Officer". It rejects dangerous plans.
-*   `config/`: Configuration files and Prompts (the personality instructions for the AI).
-
-### 🔌 `mcp_servers/` (The Hands)
-The agent cannot touch your laptop/cloud directly. It asks these isolated servers to do it.
-*   `k8s_real`: Knows how to talk to Kubernetes (`kubectl`).
-*   `github_real`: Knows how to talk to GitHub.
-*   `prometheus_real` / `loki_real`: Know how to query metrics and logs.
-
-### 🖥️ `dashboard/` (The Eyes)
-The User Interface (Next.js/React).
-*   `app/clusters/[id]/page.tsx`: The main "War Room" screen.
-*   `components/dashboard/MissionControl.tsx`: The terminal window that streams the agent's thoughts.
-
-### 💾 `backend/` (The Memory)
-Saves history to a database.
-*   `models.py`: Defines tables (Incidents, Users).
-*   `crud.py`: Functions to save/load data.
-
-### 🏗️ `infrastructure/` (The Data Center)
-*   `docker-compose.yaml`: The "Master Switch". It spins up the Agent, Dashboard, Database, and all MCP servers in one go.
+*   **Autonomous Investigation:** Correlates alerts (Prometheus) with logs (Loki) and deployment events (GitHub) to identify root causes.
+*   **Zero-Mock Data:** Connects directly to real infrastructure via MCP. No synthetic data paths.
+*   **Policy-as-Code:** All remediation plans are evaluated by a Policy Engine. High-risk actions (e.g., `revert_commit`) trigger human-in-the-loop approval.
+*   **Immutable Audit Logs:** All actions and decisions are cryptographically logged for post-incident review.
+*   **One-Click Deployment:** fully containerized stack managed via Docker Compose.
 
 ---
 
-## 🛠️ Quick Start
+## 🚀 Getting Started
 
-**Prerequisites:** Docker, Docker Compose, and Git.
+### Prerequisites
+*   **Docker** & **Docker Compose**
+*   **Git**
+*   **Make** (optional, for development)
 
-### 1. One-Click Start
-We created a script to handle everything for you.
+### Quick Start
 
-```bash
-./start.sh
-```
-*This script will:*
-1.  Check for `.env` (and create a default one using **Llama 3.2**).
-2.  Build all Docker containers.
-3.  Start the entire stack.
+1.  **Clone the repository:**
+    ```bash
+    git clone https://github.com/jayanth922/CMPE295A_Multi_Agent_SRE_Assistant.git
+    cd CMPE295A_Multi_Agent_SRE_Assistant
+    ```
 
-### 2. Access the Platform
-*   **Dashboard:** [http://localhost:3000](http://localhost:3000)
-*   **Agent API:** [http://localhost:8080/docs](http://localhost:8080/docs)
+2.  **Initialize and Start:**
+    Run the startup script to generate configuration and launch the stack.
+    ```bash
+    ./start.sh
+    ```
+    *Note: This creates a default `.env` configured for local LLM inference (Llama 3.2 via Ollama).*
 
-### 3. Stop
-```bash
-./stop.sh
-```
+3.  **Access Interfaces:**
+    *   **Dashboard:** [http://localhost:3000](http://localhost:3000)
+    *   **Agent API:** [http://localhost:8080/docs](http://localhost:8080/docs)
+
+4.  **Teardown:**
+    ```bash
+    ./stop.sh
+    ```
 
 ---
 
-## ⚙️ Configuration (`.env`)
+## ⚙️ Configuration
 
-The system uses environment variables to connect to your real tools.
+The system is configured via the `.env` file. Key variables:
 
-*   `LLM_PROVIDER`: `ollama` (default) or `groq`.
-*   `GITHUB_TOKEN`: Your GitHub Personal Access Token (for the GitHub Agent).
-*   `PROMETHEUS_URL`: URL of your Prometheus server (e.g. `http://host.docker.internal:9090`).
+*   **LLM Configuration:**
+    *   `LLM_PROVIDER`: `ollama` (local) or `groq` (cloud).
+    *   `OLLAMA_MODEL`: Default is `llama3.2`.
+*   **Integrations:**
+    *   `GITHUB_TOKEN`: Required for the GitHub Agent to list commits/create PRs.
+    *   `PROMETHEUS_URL`: Target endpoint for metric queries.
+    *   `LOKI_URL`: Target endpoint for log queries.
+
+---
+
+## 📂 Repository Structure
+
+### Service Components
+*   **`sre_agent/`**: Core application logic.
+    *   `graph_builder.py`: Defines the LangGraph state machine.
+    *   `agent_nodes.py`: Implementation of workflow steps (Investigate, Plan, Execute).
+    *   `policy_engine.py`: Logic for risk assessment and approval gates.
+*   **`mcp_servers/`**: Microservices for tool exposure.
+    *   `k8s_real/`: Adapts Kubernetes API to MCP.
+    *   `github_real/`: Adapts GitHub API to MCP.
+*   **`dashboard/`**: Frontend application source code (Next.js).
+*   **`infrastructure/`**: IaC and deployment configurations.
+    *   `docker-compose.yaml`: Service orchestration definition.
+    *   `k8s/`: Kubernetes manifests for production deployment.
+
+### Development Tools
+*   **`Makefile`**: Automation for standard development tasks.
+    *   `make quality`: Runs formatters (black), linters (ruff), and security checks (bandit).
+    *   `make test`: Executes unit tests via pytest.
+    *   *Usage ensures consistent code quality across the team.*
+*   **`pyproject.toml`**: Centralized dependency management and tool configuration.
+*   **`scripts/`**: Maintenance and utility scripts.
+    *   `seed_runbooks.py`: Bootstraps knowledge base data.
+
+---
+
+## 🤝 Contributing
+
+1.  Fork the repository.
+2.  Install dependencies: `uv sync`
+3.  Create a feature branch.
+4.  Ensure quality checks pass: `make quality`
+5.  Submit a Pull Request.
 
 ---
 
 ## 📄 License
+
 MIT License. Copyright (c) 2026 Multi-Agent SRE Team.
