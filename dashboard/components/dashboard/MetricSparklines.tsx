@@ -43,8 +43,19 @@ export function MetricSparklines({ data }: MetricSparklinesProps) {
         </Card>
     )
 
-    // Calculate current values (mock logic for demo, in prod use real last value)
     const latest = data[data.length - 1] || {}
+    const oldest = data[0] || {}
+
+    // Compute actual trend text from sliding window data
+    function trendText(key: string, unit: string): string {
+        if (data.length < 2) return "Collecting data..."
+        const oldVal = oldest[key] ?? 0
+        const newVal = latest[key] ?? 0
+        if (oldVal === 0) return "No baseline"
+        const diff = newVal - oldVal
+        const sign = diff >= 0 ? "+" : ""
+        return `${sign}${diff.toFixed(1)}${unit} over window`
+    }
 
     return (
         <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
@@ -53,32 +64,32 @@ export function MetricSparklines({ data }: MetricSparklinesProps) {
                 icon={Activity}
                 dataKey="latency"
                 color="text-yellow-500"
-                value={`${latest.latency || 0} ms`}
-                subtext="-12ms from last hour"
+                value={`${(latest.latency ?? 0).toFixed(1)} ms`}
+                subtext={trendText("latency", "ms")}
             />
             <SparklineCard
                 title="Error Rate"
                 icon={Network}
                 dataKey="errors"
                 color="text-red-500"
-                value={`${latest.errors || 0}%`}
-                subtext="+0.1% increase"
+                value={`${(latest.errors ?? 0).toFixed(2)}%`}
+                subtext={trendText("errors", "%")}
             />
             <SparklineCard
                 title="CPU Saturation"
                 icon={Cpu}
                 dataKey="cpu"
                 color="text-blue-500"
-                value={`${latest.cpu || 0}%`}
-                subtext="Healthy load"
+                value={`${(latest.cpu ?? 0).toFixed(1)}%`}
+                subtext={trendText("cpu", "%")}
             />
             <SparklineCard
                 title="Memory Usage"
                 icon={HardDrive}
                 dataKey="mem"
                 color="text-purple-500"
-                value={`${latest.mem || 0} GB`}
-                subtext="Of 8 GB Total"
+                value={`${(latest.mem ?? 0).toFixed(2)} GB`}
+                subtext={trendText("mem", "GB")}
             />
         </div>
     )

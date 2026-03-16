@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react"
 import Link from "next/link"
-import { Plus, Server, Copy, Check, Settings } from "lucide-react"
+import { Plus, Server, Copy, Check, Trash2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
@@ -34,36 +34,6 @@ export default function DashboardHome() {
     const [createdClusterToken, setCreatedClusterToken] = useState<string | null>(null)
     const [copied, setCopied] = useState(false)
     const { user } = useAuth()
-
-    const [configOpen, setConfigOpen] = useState(false)
-    const [selectedClusterId, setSelectedClusterId] = useState<string | null>(null)
-    const [kubeconfig, setKubeconfig] = useState("")
-    const [configStatus, setConfigStatus] = useState<"idle" | "submitting" | "success" | "error">("idle")
-
-    const handleConfigureCluster = async () => {
-        if (!selectedClusterId) return
-        setConfigStatus("submitting")
-        try {
-            await api.post(`/clusters/${selectedClusterId}/jobs/trigger`, {
-                job_type: "configure_cluster",
-                payload: { kubeconfig }
-            })
-            setConfigStatus("success")
-            setTimeout(() => {
-                setConfigOpen(false)
-                setConfigStatus("idle")
-                setKubeconfig("")
-            }, 2000)
-        } catch (e) {
-            console.error("Failed to configure cluster", e)
-            setConfigStatus("error")
-        }
-    }
-
-    const openConfigModal = (clusterId: string) => {
-        setSelectedClusterId(clusterId)
-        setConfigOpen(true)
-    }
 
     // Fetch Clusters (Periodic Refresh)
     useEffect(() => {
@@ -108,6 +78,17 @@ export default function DashboardHome() {
         setCreatedClusterToken(null)
         setNewClusterName("")
         setCopied(false)
+    }
+
+    const handleDeleteCluster = async (clusterId: string, clusterName: string) => {
+        if (!confirm(`Are you sure you want to delete cluster "${clusterName}"? This cannot be undone.`)) return
+        try {
+            await api.delete(`/clusters/${clusterId}`)
+            fetchClusters()
+        } catch (e) {
+            console.error("Failed to delete cluster", e)
+            alert("Failed to delete cluster. It may have active incidents or jobs.")
+        }
     }
 
     return (
@@ -214,41 +195,18 @@ export default function DashboardHome() {
                                     <Link href={`/clusters/${cluster.id}`} className="flex-1">
                                         <Button variant="outline" className="w-full">View Details</Button>
                                     </Link>
-                                    <Button variant="ghost" size="icon" onClick={() => openConfigModal(cluster.id)}>
-                                        <Settings className="h-4 w-4" />
+                                    <Button
+                                        variant="ghost"
+                                        size="icon"
+                                        className="text-red-500 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-950"
+                                        onClick={() => handleDeleteCluster(cluster.id, cluster.name)}
+                                    >
+                                        <Trash2 className="h-4 w-4" />
                                     </Button>
                                 </CardFooter>
                             </Card>
                         )
                     })}
-
-                    {/* Configuration Modal */}
-                    <Dialog open={configOpen} onOpenChange={setConfigOpen}>
-                        <DialogContent className="sm:max-w-[600px]">
-                            <DialogHeader>
-                                <DialogTitle>Configure Cluster Connection</DialogTitle>
-                                <DialogDescription>
-                                    Paste your <code>kubeconfig</code> YAML below to allow the agent to manage this cluster.
-                                </DialogDescription>
-                            </DialogHeader>
-                            <div className="grid gap-4 py-4">
-                                <Label htmlFor="kubeconfig">Kubeconfig YAML</Label>
-                                <textarea
-                                    id="kubeconfig"
-                                    className="min-h-[300px] font-mono text-xs p-4 rounded-md border bg-slate-950 text-slate-50"
-                                    placeholder="apiVersion: v1..."
-                                    value={kubeconfig}
-                                    onChange={(e) => setKubeconfig(e.target.value)}
-                                />
-                            </div>
-                            <DialogFooter>
-                                <Button onClick={handleConfigureCluster} disabled={!kubeconfig || configStatus === "submitting"}>
-                                    {configStatus === "submitting" ? "Configuring..." :
-                                        configStatus === "success" ? "Configured!" : "Update Configuration"}
-                                </Button>
-                            </DialogFooter>
-                        </DialogContent>
-                    </Dialog>
 
                     {clusters.length === 0 && (
                         <div className="col-span-full text-center p-10 text-gray-500 border-2 border-dashed rounded-lg">

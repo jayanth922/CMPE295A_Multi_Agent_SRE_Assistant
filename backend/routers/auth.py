@@ -2,6 +2,8 @@ from datetime import timedelta
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
+
+from backend.rate_limit import rate_limit
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -12,7 +14,7 @@ router = APIRouter(
     tags=["auth"],
 )
 
-@router.post("/register", response_model=schemas.UserResponse)
+@router.post("/register", response_model=schemas.UserResponse, dependencies=[Depends(rate_limit(3, 60))])
 async def register(user: schemas.UserCreate, db: AsyncSession = Depends(database.get_db)):
     db_user = await crud.get_user_by_email(db, email=user.email)
     if db_user:
@@ -22,7 +24,7 @@ async def register(user: schemas.UserCreate, db: AsyncSession = Depends(database
     return await crud.create_user(db=db, user=user)
 
 
-@router.post("/token", response_model=schemas.Token)
+@router.post("/token", response_model=schemas.Token, dependencies=[Depends(rate_limit(5, 60))])
 async def login_for_access_token(
     form_data: Annotated[OAuth2PasswordRequestForm, Depends()],
     db: AsyncSession = Depends(database.get_db)

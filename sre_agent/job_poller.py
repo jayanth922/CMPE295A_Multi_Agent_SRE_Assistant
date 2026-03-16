@@ -139,53 +139,6 @@ async def execute_job(job: Dict[str, Any], client: JobPollerClient) -> None:
         alert_name = payload_data.get("alert", payload_data.get("title", "Unknown Alert"))
         alert_name = payload_data.get("alert", payload_data.get("title", "Unknown Alert"))
         
-        # --- Zero-Touch Configuration Handler ---
-        if job_type == "configure_cluster":
-            log_callback("⚙️ Receiving cluster configuration update...")
-            kubeconfig = payload_data.get("kubeconfig")
-            
-            if not kubeconfig:
-                raise ValueError("No kubeconfig provided in payload")
-            
-            log_callback("Connecting to Kubernetes MCP Server...")
-            
-            # Create MCP client dynamically
-            from .multi_agent_langgraph import create_mcp_client
-            # We need to use asyncio.wait_for to prevent hanging
-            mcp_client = create_mcp_client()
-            
-            try:
-                log_callback("Invoking configure_cluster tool...")
-                # Connect to K8s server (assuming it's the first or named 'k8s')
-                # Since multi-server client abstracts this, we list tools to find it
-                all_tools = await mcp_client.get_tools()
-                config_tool = next((t for t in all_tools if t.name == "configure_cluster"), None)
-                
-                if not config_tool:
-                    raise RuntimeError("configure_cluster tool not found on MCP server")
-                
-                # Invoke tool
-                result_msg = await config_tool.ainvoke({"kubeconfig_content": kubeconfig})
-                log_callback(f"Result: {result_msg}")
-                
-                 # Update to COMPLETED
-                await client.update_job_status(
-                    job_id, 
-                    "completed", 
-                    result=json.dumps({"status": "success", "message": result_msg}),
-                    logs="\n".join(accumulated_logs)
-                )
-                return
-
-            except Exception as e:
-                log_callback(f"Configuration failed: {e}")
-                raise e
-            finally:
-                # Cleanup if needed (MultiServerMCPClient manages its own sessions mostly)
-                pass
-
-        # --- End Zero-Touch Handler ---
-
         log_callback(f"Starting {job_type} for alert: {alert_name}")
         
         # 3. Import and run agent (delayed import to avoid circular deps)

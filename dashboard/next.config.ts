@@ -13,6 +13,15 @@ const nextConfig: NextConfig = {
         source: "/auth/:path*",
         destination: `${process.env.API_URL || "http://localhost:8080"}/auth/:path*`,
       },
+      // Proxy metrics and agent state endpoints
+      {
+        source: "/metrics/:path*",
+        destination: `${process.env.API_URL || "http://localhost:8080"}/metrics/:path*`,
+      },
+      {
+        source: "/agent/:path*",
+        destination: `${process.env.API_URL || "http://localhost:8080"}/agent/:path*`,
+      },
     ];
   },
 };

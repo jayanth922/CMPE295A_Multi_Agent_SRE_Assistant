@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend import schemas, crud, models, database
 from backend.auth import decode_access_token
+from backend.rbac import require_admin
 from fastapi.security import OAuth2PasswordBearer
 from backend.routers.auth import login_for_access_token # reuse if necessary, but typically standard flow
 
@@ -69,10 +70,20 @@ async def get_cluster_health(
         "last_heartbeat": cluster.last_heartbeat
     }
 
+
+@router.delete("/{cluster_id}", status_code=204)
+async def delete_cluster(
+    cluster_id: uuid.UUID,
+    user: models.User = Depends(get_current_user_and_org),
+    db: AsyncSession = Depends(database.get_db)
+):
+    """Delete a cluster. Admin only."""
+    require_admin(user)
     success = await crud.delete_cluster(db, cluster_id, user.org_id)
     if not success:
         raise HTTPException(status_code=404, detail="Cluster not found")
     return
+
 
 # ----------------------------------------------------------------------
 # Break Glass & Audit API
@@ -97,7 +108,8 @@ async def set_cluster_lock(
     user: models.User = Depends(get_current_user_and_org),
     db: AsyncSession = Depends(database.get_db)
 ):
-    """Toggle Emergency Lock (Break Glass)."""
+    """Toggle Emergency Lock (Break Glass). Admin only."""
+    require_admin(user)
     locked = payload.get("locked", False)
     
     from sre_agent.redis_state_store import get_state_store

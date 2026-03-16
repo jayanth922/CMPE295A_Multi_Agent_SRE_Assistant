@@ -25,12 +25,6 @@ from .multi_agent_langgraph import create_multi_agent_system
 # SaaS API Imports
 from sre_agent.api.v1 import clusters, agent_connect, incidents
 from backend import crud, database, models
-from backend.models import IncidentStatus
-import uuid
-
-# SaaS API Imports
-from sre_agent.api.v1 import clusters, agent_connect, incidents
-from backend import crud, database, models
 from backend.routers import auth as auth_router
 from backend.models import IncidentStatus
 import uuid
@@ -63,10 +57,11 @@ logger = logging.getLogger(__name__)
 # Simple FastAPI app
 app = FastAPI(title="SRE Agent Runtime", version="1.0.0")
 
-# Add CORS middleware to allow requests from web UI
+# Add CORS middleware — restrict origins in production via CORS_ORIGINS env var
+_cors_origins = os.getenv("CORS_ORIGINS", "*").split(",")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Allow all origins in development
+    allow_origins=_cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -85,6 +80,10 @@ app.include_router(jobs_router.router, prefix="/api/v1")
 # Mission Control Router (Audit Logs & Approvals)
 from sre_agent.api.v1 import mission_control
 app.include_router(mission_control.router, prefix="/api/v1")
+
+# SLO Management Router
+from sre_agent.api.v1 import slos as slos_router
+app.include_router(slos_router.router, prefix="/api/v1")
 
 
 # Simple request/response models
@@ -169,7 +168,14 @@ async def get_mcp_client():
 @app.on_event("startup")
 async def startup_event():
     """Initialize agent on startup."""
-    await initialize_agent()
+    agent_mode = os.getenv("AGENT_MODE", "standalone").lower()
+    logger.info(f"Startup: AGENT_MODE={agent_mode}")
+
+    if agent_mode != "api":
+        # Only initialize the AI graph if we are NOT just a dumb API
+        await initialize_agent()
+    else:
+        logger.info("Running in API Mode (Control Plane). Agent Graph initialization skipped.")
     
     # Start job poller if CLUSTER_TOKEN is set
     cluster_token = os.getenv("CLUSTER_TOKEN", "")
@@ -191,6 +197,15 @@ async def invoke_agent(request: InvocationRequest):
     try:
         # Ensure agent is initialized
         await initialize_agent()
+
+        # Check if agent is enabled (It might be disabled in API Mode)
+        if agent_graph is None:
+            logger.info("Agent Graph is None (API Mode). Returning informational message.")
+            return InvocationResponse(output={
+                "message": "ℹ️ You are talking to the SaaS Control Plane. The Agent logic runs on your connected cluster. Please check the 'Active Investigations' or 'Logs' tab for real-time updates from your infrastructure.",
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "model": "ControlPlane",
+            })
 
         # Extract user prompt
         user_prompt = request.input.get("prompt", "")
@@ -298,42 +313,55 @@ async def get_metrics_snapshot():
     """
     Get current metrics snapshot for dashboard telemetry.
 
-    Returns CPU usage and HTTP error rate from Prometheus.
-    Zero-mock: returns 503 when Prometheus is unreachable (no synthetic data).
+    Returns all four Golden Signals from Prometheus:
+    - Latency (P95 request duration)
+    - Error Rate (5xx error percentage)
+    - CPU Saturation
+    - Memory Usage
+
+    Returns 503 when Prometheus is unreachable (no synthetic data).
     """
-    prometheus_url = os.getenv("PROMETHEUS_URL", "http://localhost:9090")
+    prometheus_url = os.getenv("PROMETHEUS_URL", "")
+    if not prometheus_url:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error": "prometheus_not_configured",
+                "message": "PROMETHEUS_URL not set. Connect a cluster with monitoring to see live metrics.",
+            },
+        )
     import httpx
 
+    queries = {
+        "latency": 'histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket[5m])) by (le)) * 1000',
+        "errors": 'sum(rate(http_requests_total{status=~"5.."}[5m])) / sum(rate(http_requests_total[5m])) * 100',
+        "cpu": "avg(rate(container_cpu_usage_seconds_total[5m])) * 100",
+        "mem": 'sum(container_memory_usage_bytes) / (1024*1024*1024)',
+    }
+
     try:
-        cpu_query = "avg(rate(container_cpu_usage_seconds_total[5m])) * 100"
-        error_query = 'sum(rate(http_requests_total{status=~"5.."}[5m]))'
-
+        results = {}
         async with httpx.AsyncClient(timeout=5.0) as client:
-            cpu_response = await client.get(
-                f"{prometheus_url}/api/v1/query",
-                params={"query": cpu_query},
-            )
-            cpu_data = cpu_response.json()
-
-            error_response = await client.get(
-                f"{prometheus_url}/api/v1/query",
-                params={"query": error_query},
-            )
-            error_data = error_response.json()
-
-        cpu_usage = 0.0
-        if cpu_data.get("status") == "success" and cpu_data.get("data", {}).get("result"):
-            result = cpu_data["data"]["result"][0]
-            cpu_usage = float(result.get("value", [None, 0])[1] or 0)
-
-        error_rate = 0.0
-        if error_data.get("status") == "success" and error_data.get("data", {}).get("result"):
-            result = error_data["data"]["result"][0]
-            error_rate = float(result.get("value", [None, 0])[1] or 0)
+            for signal, query in queries.items():
+                try:
+                    response = await client.get(
+                        f"{prometheus_url}/api/v1/query",
+                        params={"query": query},
+                    )
+                    data = response.json()
+                    value = 0.0
+                    if data.get("status") == "success" and data.get("data", {}).get("result"):
+                        raw = data["data"]["result"][0].get("value", [None, 0])[1]
+                        value = float(raw) if raw else 0.0
+                    results[signal] = round(value, 2)
+                except Exception:
+                    results[signal] = 0.0
 
         return {
-            "cpu_usage_percent": min(100.0, max(0.0, cpu_usage)),
-            "http_error_rate": max(0.0, error_rate),
+            "latency": results["latency"],
+            "errors": results["errors"],
+            "cpu": min(100.0, max(0.0, results["cpu"])),
+            "mem": max(0.0, results["mem"]),
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "source": "prometheus",
         }
@@ -360,21 +388,58 @@ async def get_agent_state():
         - Active alerts count
     """
     try:
-        # Get all pending approvals from Redis
         pending_approvals = []
         active_investigations = []
-        
+
+        # Scan Redis for active sessions
         if state_store.is_available():
-            # Note: RedisStateStore doesn't have a list_keys method, so we'll need to track sessions differently
-            # For now, we'll return empty lists and rely on session_id being passed from frontend
-            pass
-        
-        # Get cluster health (simplified - would query K8s in production)
-        cluster_health = "healthy"  # Would query K8s API
-        
-        # Get active alerts count (simplified - would query Prometheus Alertmanager)
-        active_alerts = 0  # Would query Alertmanager API
-        
+            try:
+                keys = state_store.redis_client.keys("sre_agent:session:*")
+                for key in keys:
+                    session_id = key.decode().split(":")[-1] if isinstance(key, bytes) else key.split(":")[-1]
+                    data = state_store.get(session_id)
+                    if data:
+                        if data.get("approval_required"):
+                            pending_approvals.append({
+                                "session_id": session_id,
+                                "plan": data.get("remediation_plan"),
+                                "status": data.get("status"),
+                            })
+                        if data.get("status") in ("RUNNING", "INVESTIGATING"):
+                            active_investigations.append({
+                                "session_id": session_id,
+                                "current_node": data.get("current_node"),
+                                "status": data.get("status"),
+                            })
+            except Exception as e:
+                logger.warning(f"Error scanning Redis for sessions: {e}")
+
+        # Query cluster health from database
+        cluster_health = "unknown"
+        active_alerts = 0
+        try:
+            from backend.database import AsyncSessionLocal
+            async with AsyncSessionLocal() as db:
+                from sqlalchemy.future import select
+                result = await db.execute(select(models.Cluster))
+                clusters = result.scalars().all()
+                if clusters:
+                    online = sum(1 for c in clusters if c.status == models.ClusterStatus.ONLINE)
+                    total = len(clusters)
+                    cluster_health = "healthy" if online == total else (
+                        "degraded" if online > 0 else "offline"
+                    )
+                    # Count pending/running jobs as proxy for active alerts
+                    from backend import crud
+                    for cluster in clusters:
+                        pending = await crud.get_pending_job_for_cluster(db, cluster.id)
+                        if pending:
+                            active_alerts += 1
+                else:
+                    cluster_health = "no_clusters"
+        except Exception as e:
+            logger.warning(f"Error querying cluster health: {e}")
+
         return {
             "pending_approvals": pending_approvals,
             "active_investigations": active_investigations,
@@ -610,63 +675,6 @@ async def run_graph_background(
             "error": str(e)
         })
 
-# Resume graph execution from executor node
-    try:
-        # Ensure we have all required state fields
-        from .agent_state import AgentState
-        from langchain_core.messages import HumanMessage
-        
-        # Ensure messages exist
-        if "messages" not in current_state or not current_state["messages"]:
-            current_state["messages"] = [
-                HumanMessage(content="Remediation plan approved, resuming execution")
-            ]
-        
-        # Ensure metadata has tools
-        if "metadata" not in current_state:
-            current_state["metadata"] = {}
-        if "tools" not in current_state["metadata"]:
-            current_state["metadata"]["tools"] = tools
-        
-        final_response = ""
-        execution_results = None
-        verification_result = None
-        
-        async for event in agent_graph.astream(current_state):
-            for node_name, node_output in event.items():
-                logger.info(f"Resuming execution - Processing node: {node_name}")
-
-                # Capture execution results
-                if node_name == "executor":
-                    execution_results = node_output.get("execution_results")
-                    logger.info("Executor completed")
-                
-                # Capture verification results
-                if node_name == "verifier":
-                    verification_result = node_output.get("verification_result")
-                    logger.info("Verifier completed")
-                
-                # Capture final response
-                if node_name == "aggregate":
-                    final_response = node_output.get("final_response", "")
-                    logger.info("Resumed execution completed")
-
-        return {
-            "status": "approved",
-            "message": "Remediation plan approved and execution completed",
-            "execution_results": execution_results.model_dump() if hasattr(execution_results, "model_dump") else execution_results,
-            "verification_result": verification_result.model_dump() if hasattr(verification_result, "model_dump") else verification_result,
-            "final_response": final_response,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-        }
-
-    except Exception as e:
-        logger.error(f"Failed to resume execution after approval: {e}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to resume execution: {str(e)}",
-        )
-
 
 
 async def run_graph_background_saas(
@@ -770,7 +778,7 @@ async def run_graph_background_saas(
                 .values(
                     status=IncidentStatus.RESOLVED,
                     summary=final_response,
-                    resolved_at=datetime.utcnow()
+                    resolved_at=datetime.now(timezone.utc)
                 )
             )
             await db.execute(stmt)
@@ -908,10 +916,23 @@ async def webhook_alert(
         logger.info("🛡️ Creating incident record for SaaS Dashboard visibility...")
         
         async with database.AsyncSessionLocal() as db:
+            # Check for duplicate incident before creating
+            dedup_title = f"[AUTO] {alert_name}"
+            existing = await crud.find_duplicate_incident(db, cluster_id, dedup_title)
+            if existing:
+                logger.info(f"Dedup: alert '{alert_name}' already tracked as incident {existing.id}")
+                return {
+                    "status": "deduplicated",
+                    "mode": "self_defense",
+                    "incident_id": str(existing.id),
+                    "cluster_id": str(cluster_id),
+                    "message": "Duplicate alert — existing incident already open",
+                }
+
             # Create incident in PostgreSQL
             from backend import schemas
             incident_data = schemas.IncidentCreate(
-                title=f"[AUTO] {alert_name}",
+                title=dedup_title,
                 description=description or f"Automatically triggered by Prometheus alert: {alert_name}",
                 severity=severity
             )

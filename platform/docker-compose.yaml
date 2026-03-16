@@ -1,0 +1,204 @@
+version: '3.8'
+
+# =============================================================================
+# SaaS Platform Stack — API, Dashboard, AI Agent, and infrastructure services
+#
+# All Dockerfiles for this stack live in platform/.
+# All AI reasoning (LLM, LangGraph, OODA loop) happens here.
+# Tool calls are dispatched to customer edge relays via the job queue.
+#
+# Usage:  cd platform && docker compose up -d --build
+# =============================================================================
+
+services:
+  # ============================================
+  # Infrastructure Services
+  # ============================================
+
+  redis:
+    image: redis:7-alpine
+    container_name: sre-redis
+    hostname: redis
+    ports:
+      - "6380:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    networks:
+      sre-network:
+        aliases:
+          - redis
+    restart: unless-stopped
+    healthcheck:
+      test: [ "CMD", "redis-cli", "ping" ]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  postgres:
+    image: postgres:15-alpine
+    container_name: sre-postgres
+    hostname: postgres
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER:-sre_user}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-sre_password}
+      - POSTGRES_DB=${POSTGRES_DB:-sre_platform}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      sre-network:
+        aliases:
+          - postgres
+    restart: unless-stopped
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-sre_user} -d ${POSTGRES_DB:-sre_platform}" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: sre-qdrant
+    hostname: qdrant
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    networks:
+      sre-network:
+        aliases:
+          - qdrant
+    restart: unless-stopped
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: sre-ollama
+    hostname: ollama
+    ports:
+      - "11435:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    networks:
+      sre-network:
+        aliases:
+          - ollama
+    restart: unless-stopped
+
+  # ============================================
+  # Memory MCP Server (incident knowledge base)
+  # ============================================
+
+  mcp-memory:
+    build:
+      context: ./mcp_memory
+      dockerfile: Dockerfile
+    container_name: sre-mcp-memory
+    hostname: mcp-memory
+    environment:
+      - QDRANT_URL=http://qdrant:6333
+      - HOST=0.0.0.0
+    networks:
+      sre-network:
+        aliases:
+          - mcp-memory
+    depends_on:
+      - qdrant
+    restart: unless-stopped
+
+  # ============================================
+  # SRE Agent API (Control Plane + AI Brain)
+  # ============================================
+
+  sre-agent-api:
+    build:
+      context: ../
+      dockerfile: platform/Dockerfile
+    container_name: sre-agent-api
+    hostname: sre-agent-api
+    ports:
+      - "8080:8080"
+    environment:
+      - SECRET_KEY=${SECRET_KEY:-sre_platform_dev_key_change_in_production}
+      - AGENT_MODE=api
+
+      # LLM (runs on platform, not customer edge)
+      - LLM_PROVIDER=ollama
+      - OLLAMA_BASE_URL=http://ollama:11434
+      - OLLAMA_MODEL=llama3.2
+
+      # Infrastructure
+      - REDIS_URL=redis://redis:6379/0
+      - QDRANT_URL=http://qdrant:6333
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-sre_user}:${POSTGRES_PASSWORD:-sre_password}@postgres:5432/${POSTGRES_DB:-sre_platform}
+
+      # Memory MCP (only MCP server on platform side)
+      - MCP_MEMORY_URI=http://mcp-memory:3000/sse
+
+      # Customer-side MCP servers are NOT accessible from here.
+      # Tool calls are dispatched via the job queue to edge relays.
+      - MCP_K8S_URI=
+      - MCP_LOGS_URI=
+      - MCP_METRICS_URI=
+      - MCP_RUNBOOKS_URI=
+      - MCP_GITHUB_URI=
+
+      # Python
+      - PYTHONPATH=/app
+      - PYTHONDONTWRITEBYTECODE=1
+      - PYTHONUNBUFFERED=1
+      - DEBUG=${DEBUG:-false}
+
+    networks:
+      sre-network:
+        aliases:
+          - sre-agent
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+      ollama:
+        condition: service_started
+      mcp-memory:
+        condition: service_started
+    restart: unless-stopped
+
+  # ============================================
+  # Dashboard (Next.js UI)
+  # ============================================
+
+  dashboard:
+    build:
+      context: ../dashboard
+      dockerfile: ../platform/Dockerfile.dashboard
+    container_name: sre-dashboard
+    ports:
+      - "3000:3000"
+    environment:
+      - API_URL=http://sre-agent-api:8080
+    depends_on:
+      - sre-agent-api
+    networks:
+      sre-network:
+        aliases:
+          - dashboard
+
+networks:
+  sre-network:
+    driver: bridge
+    name: sre-platform-network
+
+volumes:
+  redis_data:
+    driver: local
+  qdrant_data:
+    driver: local
+  ollama_data:
+    driver: local
+  postgres_data:
+    driver: local

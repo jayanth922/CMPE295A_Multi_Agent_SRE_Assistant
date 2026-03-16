@@ -29,15 +29,7 @@ interface Cluster {
     status: string
 }
 
-// Mock data generator for sparklines (in broad strokes)
-const generateSparklineData = () => {
-    return Array.from({ length: 20 }, (_, i) => ({
-        latency: 180 + Math.random() * 40,
-        errors: Math.random() > 0.8 ? Math.random() * 2 : 0,
-        cpu: 40 + Math.random() * 10,
-        mem: 3.2 + Math.random() * 0.1
-    }))
-}
+const EMPTY_METRIC = { latency: 0, errors: 0, cpu: 0, mem: 0 }
 
 export default function ClusterDetailsPage() {
     const router = useRouter()
@@ -48,7 +40,7 @@ export default function ClusterDetailsPage() {
     const [jobs, setJobs] = useState<Job[]>([])
     const [loading, setLoading] = useState(true)
     const [activeJob, setActiveJob] = useState<Job | null>(null)
-    const [sparklineData, setSparklineData] = useState<any[]>(generateSparklineData())
+    const [sparklineData, setSparklineData] = useState<any[]>([])
 
     const [locked, setLocked] = useState(false)
     const [lockLoading, setLockLoading] = useState(false)
@@ -56,22 +48,41 @@ export default function ClusterDetailsPage() {
 
     const getToken = () => Cookies.get("token")
 
+    const fetchMetrics = async () => {
+        try {
+            const token = getToken()
+            const res = await fetch("/metrics/snapshot", {
+                headers: { "Authorization": `Bearer ${token}` }
+            })
+            if (res.ok) {
+                const data = await res.json()
+                setSparklineData(prev => {
+                    const next = [...prev, {
+                        latency: data.latency ?? 0,
+                        errors: data.errors ?? 0,
+                        cpu: data.cpu ?? 0,
+                        mem: data.mem ?? 0
+                    }]
+                    // Keep a sliding window of 20 data points
+                    return next.length > 20 ? next.slice(-20) : next
+                })
+            }
+        } catch (error) {
+            // Prometheus may not be configured — silently skip
+        }
+    }
+
     // Core Polling Loop
     useEffect(() => {
         fetchClusterAndJobs()
         fetchLockStatus()
+        fetchMetrics()
 
         const interval = setInterval(() => {
             fetchJobs()
             fetchLockStatus()
-            // Simulate live metrics update
-            setSparklineData(prev => [...prev.slice(1), {
-                latency: 180 + Math.random() * 40,
-                errors: Math.random() > 0.9 ? Math.random() * 5 : 0,
-                cpu: 40 + Math.random() * 10,
-                mem: 3.2 + Math.random() * 0.1
-            }])
-        }, 2000)
+            fetchMetrics()
+        }, 5000)
 
         return () => clearInterval(interval)
     }, [clusterId])

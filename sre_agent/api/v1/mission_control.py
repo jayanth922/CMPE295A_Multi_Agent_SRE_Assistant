@@ -1,14 +1,33 @@
-from typing import List, Optional, Dict, Any
+import asyncio
 import uuid
+from typing import List, Optional, Dict, Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy.orm import Session
-from sqlalchemy import desc
+from fastapi.security import OAuth2PasswordBearer
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import desc, select
 from langgraph.types import Command
 
-from backend import database
+from backend import crud, database, models
+from backend.auth import decode_access_token
+from backend.rbac import require_admin
 from sre_agent.models import AgentAuditLog
 # agent_graph will be imported lazily to avoid circular dependency
+
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/token")
+
+async def get_current_user_and_org(token: str = Depends(oauth2_scheme), db: AsyncSession = Depends(database.get_db)):
+    payload = decode_access_token(token)
+    if payload is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Could not validate credentials",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    user = await crud.get_user_by_email(db, email=payload.get("sub"))
+    if user is None:
+        raise HTTPException(status_code=401, detail="User not found")
+    return user
 
 router = APIRouter(
     prefix="/incidents",
@@ -27,26 +46,28 @@ def get_agent_graph():
     return agent_graph
 
 @router.get("/{incident_id}/logs")
-def get_incident_audit_logs(
+async def get_incident_audit_logs(
     incident_id: str,
-    db: Session = Depends(database.SessionLocal) # Sync session for simplicity or Async
+    user: models.User = Depends(get_current_user_and_org),
+    db: AsyncSession = Depends(database.get_db),
 ):
     """
     Get audit logs for a specific incident.
-    Using Sync session here because AuditLogs were written synchronously.
     """
     # Fetch Audit Logs (Tools)
-    audit_logs = db.query(AgentAuditLog).filter(
+    stmt = select(AgentAuditLog).filter(
         AgentAuditLog.incident_id == incident_id
-    ).order_by(desc(AgentAuditLog.timestamp)).all()
-    
+    ).order_by(desc(AgentAuditLog.timestamp))
+    result = await db.execute(stmt)
+    audit_logs = result.scalars().all()
+
     # Fetch Redis Logs (Thoughts/Steps)
     from sre_agent.agent_runtime import state_store
     redis_logs = state_store.get_logs(incident_id)
-    
+
     # Convert Redis strings to structured objects
     structured_redis_logs = []
-    
+
     for log_str in redis_logs:
         log_entry = {
             "id": str(uuid.uuid4()),
@@ -58,7 +79,7 @@ def get_incident_audit_logs(
             "result": None,
             "error_message": None
         }
-        
+
         # Try to extract timestamp: [2023-10-27T10:00:00Z] Message...
         try:
             if log_str.startswith("[") and "]" in log_str:
@@ -77,7 +98,7 @@ def get_incident_audit_logs(
                          log_entry["tool_args"] = log_str[ts_end + 1:].strip()
         except Exception:
             pass
-            
+
         structured_redis_logs.append(log_entry)
 
     combined_logs = []
@@ -92,37 +113,40 @@ def get_incident_audit_logs(
             "result": log.result,
             "error_message": log.error_message
         })
-        
+
     for r_log in structured_redis_logs:
         combined_logs.append(r_log)
-    
+
     # Sort combined logs by timestamp
     def get_sort_key(x):
         ts = x.get("timestamp")
         if not ts:
-            return "" 
+            return ""
         return ts
-        
+
     combined_logs.sort(key=get_sort_key, reverse=True)
-        
+
     return combined_logs
 
 @router.get("/{incident_id}/status")
-async def get_incident_status(incident_id: str):
+async def get_incident_status(
+    incident_id: str,
+    user: models.User = Depends(get_current_user_and_org),
+):
     """
     Get the current status of the LangGraph execution for this incident.
     """
     graph = get_agent_graph()
     config = {"configurable": {"thread_id": incident_id}}
-    
+
     try:
         current_state = await graph.aget_state(config)
-        
+
         if not current_state.values:
              return {"status": "UNKNOWN", "next": []}
 
         next_ops = current_state.next
-        
+
         # Check if we are waiting for input (interrupted)
         is_paused = False
         if next_ops:
@@ -132,7 +156,7 @@ async def get_incident_status(incident_id: str):
                 first_task = current_state.tasks[0]
                 if first_task.interrupts:
                     is_paused = True
-                    
+
         return {
             "status": "WAITING_APPROVAL" if is_paused else "RUNNING",
             "next": next_ops,
@@ -144,35 +168,39 @@ async def get_incident_status(incident_id: str):
         return {"status": "NOT_STARTED", "error": str(e)}
 
 @router.post("/{incident_id}/approve")
-async def approve_incident_action(incident_id: str):
+async def approve_incident_action(
+    incident_id: str,
+    user: models.User = Depends(get_current_user_and_org),
+):
     """
-    Resume execution with approval.
+    Resume execution with approval. Admin only.
     """
+    require_admin(user)
     graph = get_agent_graph()
     config = {"configurable": {"thread_id": incident_id}}
-    
+
     try:
         # Resume the graph
         # output = await graph.ainvoke(Command(resume="APPROVE"), config)
         # Actually, for resuming from interrupt, we update state or just invoke with Command
-        
+
         # NOTE: If we are just resuming, we can use None or a specific value expected by the graph
         # If using interrupt_before, we typically just run it again?
         # No, we need to invoke. Providing Command(resume="APPROVE") is correct if we used interrupt(payload)
         # If we used interrupt_before=["node"], we just need to continue.
         # But usually 'interrupt_before' stops *before* the node. To run it, we just invoke(None, config)?
         # Or invoke(Command(resume=...), ...) if we want to change behavior?
-        
+
         # Let's assume we used a simple interrupt_before logic.
         # But if the user request says: "Resume execution using graph.invoke(Command(resume='APPROVE'), config)"
         # I will follow that instruction.
-        
+
         background_task_run = asyncio.create_task(
             graph.ainvoke(Command(resume="APPROVE"), config)
         )
         # We don't await full completion to return fast
-        
+
         return {"status": "RESUMED"}
-        
+
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

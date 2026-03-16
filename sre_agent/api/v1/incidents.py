@@ -1,3 +1,4 @@
+import logging
 from typing import List
 import uuid
 
@@ -7,11 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend import schemas, crud, models, database
 from sre_agent.api.v1.clusters import get_current_user_and_org
 
-# Import the core agent runtime logic
-# Note: We need to import this carefully to avoid circular deps if agent_runtime imports this
-# Ideally, the background implementation sits in specific module.
-# For now, we assume `agent_runtime` is the entrypoint but we need to trigger logic.
-# Let's import the background function dynamically or refactor the graph runner.
+logger = logging.getLogger(__name__)
 
 router = APIRouter(
     prefix="/clusters/{cluster_id}",
@@ -43,10 +40,16 @@ async def trigger_incident(
     cluster = await crud.get_cluster_by_id(db, cluster_id)
     if not cluster or cluster.org_id != user.org_id:
         raise HTTPException(status_code=404, detail="Cluster not found")
-    
+
+    # Check for duplicate incident
+    existing = await crud.find_duplicate_incident(db, cluster_id, payload.title)
+    if existing:
+        logger.info(f"Dedup: incident '{payload.title}' already open as {existing.id}")
+        return existing
+
     # 1. Create Incident Record
     incident = await crud.create_incident(db, payload, cluster_id)
-    
+
     # 2. Trigger Background Agent
     # We delay the import to avoid top-level circular dependency if any
     try:
@@ -58,8 +61,10 @@ async def trigger_incident(
             cluster_id=cluster.id,
             alert_name=payload.title
         )
-    except ImportError:
-        # Fallback or Log Error if not yet implemented
-        pass
+    except ImportError as e:
+        logger.error(
+            f"Failed to import run_graph_background_saas: {e}. "
+            f"Incident {incident.id} created but no investigation will run."
+        )
 
     return incident

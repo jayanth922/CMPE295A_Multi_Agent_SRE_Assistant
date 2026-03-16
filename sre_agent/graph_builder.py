@@ -367,9 +367,10 @@ async def _reflector_node(state: AgentState) -> Dict[str, Any]:
         logger.info(f"   Confidence: {analysis.confidence:.2f}")
         logger.info(f"   Discrepancies: {len(analysis.discrepancies)}")
 
-        # Determine next step (limit max investigations to 3 to prevent loops)
+        # Determine next step (configurable investigation depth via MAX_INVESTIGATION_DEPTH)
+        max_depth = int(os.getenv("MAX_INVESTIGATION_DEPTH", "3"))
         current_investigation_count = state.get("investigation_count", 0)
-        if analysis.requires_deeper_investigation and analysis.recommended_agents and current_investigation_count < 3:
+        if analysis.requires_deeper_investigation and analysis.recommended_agents and current_investigation_count < max_depth:
             logger.info(
                 f"🔄 ReflectorNode: Routing back to agents for deeper investigation"
             )
@@ -891,13 +892,16 @@ async def _verifier_node(state: AgentState) -> Dict[str, Any]:
                         signal_value = signal_data.get("value", [])
                         if isinstance(signal_value, list) and len(signal_value) > 0:
                             value = float(signal_value[0][1]) if isinstance(signal_value[0], list) else float(signal_value[0])
-                            # Simple thresholds (can be made configurable)
+                            # Golden signal thresholds — configurable via env
+                            _gs_latency = float(os.getenv("GS_LATENCY_THRESHOLD", "1.0"))
+                            _gs_error = float(os.getenv("GS_ERROR_THRESHOLD", "0.01"))
+                            _gs_saturation = float(os.getenv("GS_SATURATION_THRESHOLD", "0.8"))
                             if signal_name == "latency":
-                                golden_signals[signal_name] = "normal" if value < 1.0 else "degraded"
+                                golden_signals[signal_name] = "normal" if value < _gs_latency else "degraded"
                             elif signal_name == "errors":
-                                golden_signals[signal_name] = "normal" if value < 0.01 else "elevated"
+                                golden_signals[signal_name] = "normal" if value < _gs_error else "elevated"
                             elif signal_name == "saturation":
-                                golden_signals[signal_name] = "normal" if value < 0.8 else "high"
+                                golden_signals[signal_name] = "normal" if value < _gs_saturation else "high"
                             else:
                                 golden_signals[signal_name] = "normal"
                     else:
@@ -1067,9 +1071,11 @@ def build_multi_agent_graph(
     # Set entry point
     workflow.set_entry_point("prepare")
 
-    # Add edges from prepare to investigation_swarm (bypassing slow supervisor LLM planning)
-    # TODO: Re-enable supervisor routing when using a larger LLM
-    workflow.add_edge("prepare", "investigation_swarm")
+    # Route from prepare: use supervisor for planning (if enabled) or go directly to swarm
+    if os.getenv("ENABLE_SUPERVISOR_ROUTING", "false").lower() in ("true", "1", "yes"):
+        workflow.add_edge("prepare", "supervisor")
+    else:
+        workflow.add_edge("prepare", "investigation_swarm")
 
     # Add conditional edges from supervisor
     workflow.add_conditional_edges(

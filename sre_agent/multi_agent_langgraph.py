@@ -219,68 +219,12 @@ async def create_multi_agent_system(
 
     # Combine local tools with MCP tools
     local_tools = [get_current_time]
-
-    # Memory tools removed
-    memory_tools = []
-
-    all_tools = local_tools + mcp_tools + memory_tools
+    all_tools = local_tools + mcp_tools
 
     # Debug: Show all tools being passed to agents
     logger.info(f"Total tools being passed to agents: {len(all_tools)}")
     logger.info(f"  - Local tools: {len(local_tools)}")
     logger.info(f"  - MCP tools: {len(mcp_tools)}")
-
-    # Memory tool logging removed
-    if False:
-            logger.info(f"    Tool: {getattr(tool, 'name', 'unknown')}")
-            logger.info(
-                f"      Description: {getattr(tool, 'description', 'No description')}"
-            )
-            # Log args schema details
-            args_schema = getattr(tool, "args_schema", None)
-            if args_schema:
-                logger.info(f"      Args schema: {args_schema.__name__}")
-                # Handle both Pydantic v1 and v2
-                if hasattr(args_schema, "model_fields"):
-                    # Pydantic v2
-                    for field_name, field_info in args_schema.model_fields.items():
-                        field_type = str(field_info.annotation)
-                        field_desc = (
-                            field_info.description
-                            if field_info.description
-                            else "No description"
-                        )
-                        field_default = (
-                            str(field_info.default)
-                            if field_info.default is not None
-                            else "No default"
-                        )
-                        logger.info(
-                            f"        - {field_name}: {field_type} (description: {field_desc}, default: {field_default})"
-                        )
-                elif hasattr(args_schema, "__fields__"):
-                    # Pydantic v1
-                    for field_name, field_info in args_schema.__fields__.items():
-                        field_type = str(field_info.type_)
-                        field_desc = (
-                            field_info.field_info.description
-                            if hasattr(field_info.field_info, "description")
-                            else "No description"
-                        )
-                        field_default = (
-                            str(field_info.default)
-                            if field_info.default is not None
-                            else "No default"
-                        )
-                        logger.info(
-                            f"        - {field_name}: {field_type} (description: {field_desc}, default: {field_default})"
-                        )
-            else:
-                logger.info("      Args schema: No schema")
-            # Log additional attributes if present
-            if hasattr(tool, "memory_client"):
-                logger.info("      Has memory_client: Yes")
-            logger.info(f"      Tool class: {tool.__class__.__name__}")
 
     logger.info("All tool names:")
     for tool in all_tools:

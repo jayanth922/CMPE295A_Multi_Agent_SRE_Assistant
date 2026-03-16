@@ -49,7 +49,7 @@ export default function AuditLogPage() {
         // Poll for audit logs
         const fetchLogs = async () => {
             try {
-                const res = await fetch(`/api/clusters/${clusterId}/audit`)
+                const res = await fetch(`/api/v1/clusters/${clusterId}/audit`)
                 if (res.ok) {
                     const data = await res.json()
                     setEvents(data)
@@ -117,7 +117,7 @@ export default function AuditLogPage() {
                                 events.map((event) => (
                                     <TableRow key={event.id}>
                                         <TableCell className="whitespace-nowrap">
-                                            {formatDistanceToNow(new Date(event.timestamp), { addSuffix: true })}
+                                            {formatDistanceToNow(new Date(event.timestamp))}
                                         </TableCell>
                                         <TableCell>
                                             <div className="flex items-center gap-2">

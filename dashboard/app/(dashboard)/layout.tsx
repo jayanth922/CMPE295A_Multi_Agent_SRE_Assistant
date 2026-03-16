@@ -1,10 +1,10 @@
 "use client"
 
 import Link from "next/link"
-import { usePathname, useRouter } from "next/navigation"
-import Cookies from "js-cookie"
+import { usePathname } from "next/navigation"
 import { LayoutDashboard, Server, Settings, LogOut } from "lucide-react"
 import { Button } from "@/components/ui/button"
+import { useAuth } from "@/lib/auth-context"
 
 export default function DashboardLayout({
     children,
@@ -12,12 +12,7 @@ export default function DashboardLayout({
     children: React.ReactNode
 }) {
     const pathname = usePathname()
-    const router = useRouter()
-
-    const handleLogout = () => {
-        Cookies.remove("token")
-        router.push("/login")
-    }
+    const { user, logout } = useAuth()
 
     const navItems = [
         { name: "Overview", href: "/", icon: LayoutDashboard },
@@ -52,7 +47,7 @@ export default function DashboardLayout({
                     })}
                 </nav>
                 <div className="p-4 border-t border-gray-200 dark:border-gray-700">
-                    <Button variant="ghost" className="w-full justify-start gap-3" onClick={handleLogout}>
+                    <Button variant="ghost" className="w-full justify-start gap-3" onClick={logout}>
                         <LogOut size={18} />
                         Logout
                     </Button>
@@ -67,7 +62,7 @@ export default function DashboardLayout({
                             {pathname === "/" ? "Overview" : pathname.split("/").pop()}
                         </h2>
                         <div className="flex items-center gap-4">
-                            <span className="text-sm text-gray-500">Admin User</span>
+                            <span className="text-sm text-gray-500">{user?.email || "Unknown"}</span>
                             {/* <Avatar /> can go here */}
                         </div>
                     </div>

@@ -11,16 +11,17 @@ from backend.schemas import UserCreate
 
 async def seed_default_user():
     async with AsyncSessionLocal() as db:
-        email = "admin@example.com"
-        password = "admin"
-        
+        email = os.getenv("SEED_ADMIN_EMAIL", "admin@example.com")
+        password = os.getenv("SEED_ADMIN_PASSWORD", "admin")
+        org_name = os.getenv("SEED_ADMIN_ORG", "SRE Admin Org")
+
         user = await get_user_by_email(db, email)
         if user:
             print(f"User {email} already exists.")
             return
 
         print(f"Creating default user: {email}")
-        new_user = UserCreate(email=email, password=password, role="admin", org_name="SRE Admin Org")
+        new_user = UserCreate(email=email, password=password, role="admin", org_name=org_name)
         await create_user(db, new_user)
         print("User created successfully.")
 

@@ -94,6 +94,38 @@ class IncidentResponse(BaseModel):
         from_attributes = True
 
 # ----------------------------------------------------------------------
+# SLO Schemas
+# ----------------------------------------------------------------------
+
+class SLOCreate(BaseModel):
+    name: str
+    sli_metric: str
+    target: float  # e.g., 99.9
+    window_days: int = 30
+
+class SLOResponse(BaseModel):
+    id: uuid.UUID
+    cluster_id: uuid.UUID
+    name: str
+    sli_metric: str
+    target: float
+    window_days: int
+    current_value: Optional[float] = None
+    error_budget_remaining: Optional[float] = None
+    last_calculated: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
+class SLOStatusResponse(BaseModel):
+    """Enriched SLO status with burn rate."""
+    slo: SLOResponse
+    budget_consumed_percent: float
+    burn_rate_1h: Optional[float] = None
+    burn_rate_6h: Optional[float] = None
+    is_breaching: bool
+
+# ----------------------------------------------------------------------
 # Job Schemas
 # ----------------------------------------------------------------------
 

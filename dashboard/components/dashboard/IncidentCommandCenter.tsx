@@ -5,14 +5,19 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { ScrollArea } from "@/components/ui/scroll-area"
-import { Terminal, Shield, Check, X, AlertOctagon, Play } from "lucide-react"
+import { Terminal, Shield, Check, X, AlertOctagon, Play, Loader2 } from "lucide-react"
 import Cookies from "js-cookie"
 
 interface Job {
     id: string
+    job_type: string
     status: string
-    logs: string | null
+    payload: string | null
     result: string | null
+    logs: string | null
+    created_at: string
+    started_at: string | null
+    completed_at: string | null
 }
 
 interface IncidentCommandCenterProps {
@@ -43,6 +48,36 @@ export function IncidentCommandCenter({ job, onRefresh }: IncidentCommandCenterP
         }
     }
 
+    // Parse job payload and result for dynamic context
+    const payload = (() => {
+        try { return job.payload ? JSON.parse(job.payload) : {} } catch { return {} }
+    })()
+    const result = (() => {
+        try { return job.result ? JSON.parse(job.result) : {} } catch { return {} }
+    })()
+
+    const incidentTitle = payload.alert || payload.title || job.job_type || "Investigation"
+    const severity = payload.severity || (job.status === "failed" ? "critical" : "medium")
+    const hypothesis = result.hypothesis || result.summary || result.diagnosis || null
+
+    // Calculate duration from job timestamps
+    const duration = (() => {
+        const start = job.started_at || job.created_at
+        const end = job.completed_at || new Date().toISOString()
+        const diffMs = new Date(end).getTime() - new Date(start).getTime()
+        if (diffMs < 0) return "0s"
+        const mins = Math.floor(diffMs / 60000)
+        const secs = Math.floor((diffMs % 60000) / 1000)
+        return mins > 0 ? `${mins}m ${secs}s` : `${secs}s`
+    })()
+
+    // Extract plan steps from result
+    const planSteps: string[] = result.plan || result.actions || result.remediation_steps || []
+
+    const severityColor = severity === "critical" ? "border-red-500 text-red-500" :
+        severity === "high" ? "border-orange-500 text-orange-500" :
+            "border-yellow-500 text-yellow-500"
+
     return (
         <div className="grid gap-4 md:grid-cols-12 h-[500px]">
             {/* Left: Incident Context */}
@@ -50,22 +85,26 @@ export function IncidentCommandCenter({ job, onRefresh }: IncidentCommandCenterP
                 <CardHeader>
                     <CardTitle className="text-sm font-medium text-muted-foreground">INCIDENT CONTEXT</CardTitle>
                     <div className="flex items-center gap-2">
-                        <Badge variant="outline" className="animate-pulse border-red-500 text-red-500">
-                            Critical
+                        <Badge variant="outline" className={`${job.status === "running" ? "animate-pulse" : ""} ${severityColor}`}>
+                            {severity}
                         </Badge>
-                        <span className="text-xl font-bold tracking-tight">high_latency</span>
+                        <span className="text-xl font-bold tracking-tight truncate" title={incidentTitle}>
+                            {incidentTitle}
+                        </span>
                     </div>
                 </CardHeader>
                 <CardContent className="space-y-4">
                     <div>
-                        <p className="text-xs text-muted-foreground uppercase">Hypothesis</p>
+                        <p className="text-xs text-muted-foreground uppercase">
+                            {hypothesis ? "Hypothesis" : "Status"}
+                        </p>
                         <p className="text-sm">
-                            Commit <code className="bg-muted px-1 py-0.5 rounded">a1b2c</code> introduced a 5s sleep in checkout flow.
+                            {hypothesis || `Job ${job.status}`}
                         </p>
                     </div>
                     <div>
                         <p className="text-xs text-muted-foreground uppercase">Duration</p>
-                        <p className="font-mono text-lg">12m 30s</p>
+                        <p className="font-mono text-lg">{duration}</p>
                     </div>
                 </CardContent>
             </Card>
@@ -111,18 +150,27 @@ export function IncidentCommandCenter({ job, onRefresh }: IncidentCommandCenterP
                         <div className="p-3 bg-slate-900 rounded border border-slate-700">
                             <div className="flex items-center gap-2 text-blue-400 mb-2">
                                 <Shield className="h-4 w-4" />
-                                <span className="text-xs font-bold uppercase">Proposed Plan</span>
+                                <span className="text-xs font-bold uppercase">
+                                    {planSteps.length > 0 ? "Proposed Plan" : "Agent Output"}
+                                </span>
                             </div>
-                            <ul className="text-xs space-y-2 text-slate-300">
-                                <li className="flex gap-2">
-                                    <span className="text-slate-500">1.</span>
-                                    <span>Restart Deployment</span>
-                                </li>
-                                <li className="flex gap-2">
-                                    <span className="text-slate-500">2.</span>
-                                    <span>Revert Commit <code className="text-xs">a1b2c</code></span>
-                                </li>
-                            </ul>
+                            {planSteps.length > 0 ? (
+                                <ul className="text-xs space-y-2 text-slate-300">
+                                    {planSteps.map((step: string, i: number) => (
+                                        <li key={i} className="flex gap-2">
+                                            <span className="text-slate-500">{i + 1}.</span>
+                                            <span>{step}</span>
+                                        </li>
+                                    ))}
+                                </ul>
+                            ) : (
+                                <p className="text-xs text-slate-400">
+                                    {job.status === "running" ? "Agent is investigating..." :
+                                     job.status === "completed" ? (result.summary || "Investigation complete.") :
+                                     job.status === "failed" ? (result.error || "Job failed.") :
+                                     "Waiting for agent to start..."}
+                                </p>
+                            )}
                         </div>
                     </div>
 
@@ -162,24 +210,5 @@ export function IncidentCommandCenter({ job, onRefresh }: IncidentCommandCenterP
                 </CardContent>
             </Card>
         </div>
-    )
-}
-
-function Loader2(props: any) {
-    return (
-        <svg
-            {...props}
-            xmlns="http://www.w3.org/2000/svg"
-            width="24"
-            height="24"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-        >
-            <path d="M21 12a9 9 0 1 1-6.219-8.56" />
-        </svg>
     )
 }

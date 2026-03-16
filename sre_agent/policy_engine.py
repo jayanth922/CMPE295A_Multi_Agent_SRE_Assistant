@@ -8,6 +8,7 @@ operations in production environments.
 """
 
 import logging
+import os
 from typing import Literal
 
 from .agent_state import RemediationAction
@@ -49,14 +50,15 @@ def evaluate_action(
         f"🔒 PolicyEngine: Evaluating action '{action_type}' on '{target}' in '{environment}' (risk: {risk_score})"
     )
 
-    # Rule 1: Block RESTART on PROD unless risk < 3
+    # Rule 1: Block RESTART on PROD unless risk < threshold (configurable)
+    restart_risk_threshold = float(os.getenv("POLICY_RESTART_RISK_THRESHOLD", "3.0"))
     if action_type == "restart" and env_lower == "production":
-        if risk_score >= 3.0:
-            reason = f"RESTART blocked on PROD: Risk score {risk_score} >= 3.0"
+        if risk_score >= restart_risk_threshold:
+            reason = f"RESTART blocked on PROD: Risk score {risk_score} >= {restart_risk_threshold}"
             logger.warning(f"🚫 PolicyEngine: {reason}")
             return False, reason
         else:
-            reason = f"RESTART allowed on PROD: Risk score {risk_score} < 3.0"
+            reason = f"RESTART allowed on PROD: Risk score {risk_score} < {restart_risk_threshold}"
             logger.info(f"✅ PolicyEngine: {reason}")
             return True, reason
 

@@ -12,8 +12,9 @@ import asyncio
 import functools
 import json
 import logging
+import os
 from typing import Any, Callable, Optional
-from datetime import datetime
+from datetime import datetime, timezone
 import uuid
 
 from pydantic import BaseModel
@@ -178,8 +179,6 @@ def wrap_tool_with_retry(tool: Any, max_attempts: int = 3) -> Any:
                 logger.warning(f"Tool {tool_name} failed on first attempt: {e}")
                 return error.to_agent_response()
         
-                return error.to_agent_response()
-        
         object.__setattr__(tool, "ainvoke", safe_ainvoke)
     
     object.__setattr__(tool, "invoke", safe_invoke)
@@ -226,7 +225,7 @@ def log_audit_entry(
                 new_id = uuid.uuid4()
                 log_entry = AgentAuditLog(
                     id=new_id,
-                    timestamp=datetime.utcnow(),
+                    timestamp=datetime.now(timezone.utc),
                     incident_id=incident_id or "general",
                     agent_name=agent_name or "Unknown",
                     tool_name=tool_name,
@@ -289,15 +288,15 @@ _CIRCUIT_BREAKER_STATE = {
     "is_open": {}, # tool_name -> bool
 }
 
-CIRCUIT_BREAKER_THRESHOLD = 5
-CIRCUIT_BREAKER_RECOVERY_TIME = 60 # seconds
+CIRCUIT_BREAKER_THRESHOLD = int(os.getenv("CIRCUIT_BREAKER_THRESHOLD", "5"))
+CIRCUIT_BREAKER_RECOVERY_TIME = int(os.getenv("CIRCUIT_BREAKER_RECOVERY_SECONDS", "60"))
 
 def check_circuit_breaker(tool_name: str) -> None:
     """Check if circuit breaker is open for tool."""
     if _CIRCUIT_BREAKER_STATE["is_open"].get(tool_name, False):
         last_fail = _CIRCUIT_BREAKER_STATE["last_failure"].get(tool_name)
         if last_fail:
-            elapsed = (datetime.utcnow() - last_fail).total_seconds()
+            elapsed = (datetime.now(timezone.utc) - last_fail).total_seconds()
             if elapsed < CIRCUIT_BREAKER_RECOVERY_TIME:
                 raise Exception(f"Circuit Breaker OPEN for {tool_name} (Cooling down for {int(CIRCUIT_BREAKER_RECOVERY_TIME - elapsed)}s)")
             else:
@@ -317,7 +316,7 @@ def record_failure(tool_name: str) -> None:
     """Record failure and potentially open circuit."""
     current = _CIRCUIT_BREAKER_STATE["failures"].get(tool_name, 0) + 1
     _CIRCUIT_BREAKER_STATE["failures"][tool_name] = current
-    _CIRCUIT_BREAKER_STATE["last_failure"][tool_name] = datetime.utcnow()
+    _CIRCUIT_BREAKER_STATE["last_failure"][tool_name] = datetime.now(timezone.utc)
     
     if current >= CIRCUIT_BREAKER_THRESHOLD:
         if not _CIRCUIT_BREAKER_STATE["is_open"].get(tool_name, False):
