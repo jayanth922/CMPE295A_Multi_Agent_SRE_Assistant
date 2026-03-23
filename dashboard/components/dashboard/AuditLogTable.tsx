@@ -13,6 +13,7 @@ import {
     TableRow,
 } from "@/components/ui/table"
 import { Bot, User, ShieldCheck } from "lucide-react"
+import Cookies from "js-cookie"
 
 function formatDistanceToNow(date: Date) {
     const now = new Date();
@@ -48,7 +49,10 @@ export function AuditLogTable() {
     useEffect(() => {
         const fetchLogs = async () => {
             try {
-                const res = await fetch(`/api/v1/clusters/${clusterId}/audit`)
+                const token = Cookies.get("token")
+                const res = await fetch(`/api/v1/clusters/${clusterId}/audit`, {
+                    headers: { "Authorization": `Bearer ${token}` }
+                })
                 if (res.ok) {
                     const data = await res.json()
                     setEvents(data)

@@ -171,7 +171,7 @@ class SaaSClient:
         try:
             async with httpx.AsyncClient(timeout=5.0) as http:
                 resp = await http.post(
-                    f"{self.saas_url}/api/v1/clusters/connect/heartbeat",
+                    f"{self.saas_url}/api/v1/agent/heartbeat",
                     headers=self.headers,
                 )
                 return resp.status_code == 200

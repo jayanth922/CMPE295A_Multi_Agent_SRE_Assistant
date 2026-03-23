@@ -3,12 +3,15 @@ version: '3.8'
 # =============================================================================
 # Customer Edge Stack — Lightweight relay + MCP tool servers
 #
-# All Dockerfiles for this stack live in customer/.
-# This stack does NOT run any AI/LLM workloads. All reasoning happens on
-# the SaaS platform. The edge relay polls for tool_call jobs, executes them
-# against local MCP servers, and returns results.
+# Sits on the SAME network as the customer's infrastructure (SRE Demo App)
+# so MCP servers can query Prometheus, Loki, etc. directly.
 #
-# Usage:  cd customer && docker compose up -d --build
+# Communicates with the SaaS platform via host.docker.internal:8080.
+#
+# Usage:
+#   1. Start SRE Demo App first  (cd SRE_Demo_App && docker compose up -d)
+#   2. Create .env with CLUSTER_TOKEN  (from SaaS dashboard)
+#   3. docker compose up -d --build
 # =============================================================================
 
 services:
@@ -68,10 +71,12 @@ services:
       dockerfile: Dockerfile
     container_name: mcp-prometheus
     environment:
-      - PROMETHEUS_URL=${PROMETHEUS_URL}
+      # Reaches Prometheus on the Demo App's network
+      - PROMETHEUS_URL=${PROMETHEUS_URL:-http://prometheus:9090}
       - HOST=0.0.0.0
     networks:
       - edge-network
+      - demo-net        # Join Demo App network to reach Prometheus
     restart: unless-stopped
 
   mcp-loki:
@@ -80,10 +85,12 @@ services:
       dockerfile: Dockerfile
     container_name: mcp-loki
     environment:
-      - LOKI_URL=${LOKI_URL}
+      # Reaches Loki on the Demo App's network
+      - LOKI_URL=${LOKI_URL:-http://loki:3100}
       - HOST=0.0.0.0
     networks:
       - edge-network
+      - demo-net        # Join Demo App network to reach Loki
     restart: unless-stopped
 
   mcp-github:
@@ -116,3 +123,6 @@ networks:
   edge-network:
     driver: bridge
     name: sre-edge-network
+  demo-net:
+    external: true
+    name: sre-demo-net    # Created by SRE Demo App's docker-compose

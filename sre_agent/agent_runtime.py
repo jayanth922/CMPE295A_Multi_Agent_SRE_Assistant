@@ -85,6 +85,10 @@ app.include_router(mission_control.router, prefix="/api/v1")
 from sre_agent.api.v1 import slos as slos_router
 app.include_router(slos_router.router, prefix="/api/v1")
 
+# Alert Webhook Router (receives Alertmanager webhooks)
+from sre_agent.api.v1 import alerts as alerts_router
+app.include_router(alerts_router.router, prefix="/api/v1")
+
 
 # Simple request/response models
 class InvocationRequest(BaseModel):
