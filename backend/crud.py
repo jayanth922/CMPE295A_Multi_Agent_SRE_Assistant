@@ -57,13 +57,20 @@ async def get_clusters_for_org(db: AsyncSession, org_id: uuid.UUID):
     return result.scalars().all()
 
 async def create_cluster(db: AsyncSession, cluster: schemas.ClusterCreate, org_id: uuid.UUID):
-    # Generate Cluster Token
     cluster_token = f"cl_{uuid.uuid4().hex}"
     db_cluster = models.Cluster(
         name=cluster.name,
         org_id=org_id,
         token=cluster_token,
-        status=models.ClusterStatus.OFFLINE
+        status=models.ClusterStatus.ONLINE,
+        prometheus_url=cluster.prometheus_url,
+        loki_url=cluster.loki_url,
+        k8s_api_server=cluster.k8s_api_server,
+        k8s_token=cluster.k8s_token,
+        github_token=cluster.github_token,
+        github_repo=cluster.github_repo,
+        notion_api_key=cluster.notion_api_key,
+        notion_database_id=cluster.notion_database_id,
     )
     db.add(db_cluster)
     await db.commit()

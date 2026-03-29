@@ -7,23 +7,10 @@ from typing import Optional
 
 from backend import schemas, crud, models, database
 from backend.auth import decode_access_token
+from sre_agent.api.v1.auth_deps import get_current_user_and_org
 from fastapi.security import OAuth2PasswordBearer
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/token")
-
-# Dependency: Get current user (for Dashboard triggering jobs)
-async def get_current_user_and_org(token: str = Depends(oauth2_scheme), db: AsyncSession = Depends(database.get_db)):
-    payload = decode_access_token(token)
-    if payload is None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Could not validate credentials",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    user = await crud.get_user_by_email(db, email=payload.get("sub"))
-    if user is None:
-        raise HTTPException(status_code=401, detail="User not found")
-    return user
 
 # Dependency: Get cluster by token (for Agent polling)
 async def get_cluster_by_token(

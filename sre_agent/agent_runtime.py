@@ -23,7 +23,7 @@ from .logging_config import configure_logging
 from .multi_agent_langgraph import create_multi_agent_system
 
 # SaaS API Imports
-from sre_agent.api.v1 import clusters, agent_connect, incidents
+from sre_agent.api.v1 import clusters, incidents
 from backend import crud, database, models
 from backend.routers import auth as auth_router
 from backend.models import IncidentStatus
@@ -69,7 +69,6 @@ app.add_middleware(
 
 # Mount SaaS API Routers
 app.include_router(clusters.router, prefix="/api/v1")
-app.include_router(agent_connect.router, prefix="/api/v1")
 app.include_router(incidents.router, prefix="/api/v1")
 app.include_router(auth_router.router)
 
@@ -181,14 +180,6 @@ async def startup_event():
     else:
         logger.info("Running in API Mode (Control Plane). Agent Graph initialization skipped.")
     
-    # Start job poller if CLUSTER_TOKEN is set
-    cluster_token = os.getenv("CLUSTER_TOKEN", "")
-    if cluster_token:
-        from .job_poller import start_job_poller
-        logger.info("🔄 Starting job poller (CLUSTER_TOKEN detected)")
-        start_job_poller()
-    else:
-        logger.info("ℹ️ Job poller disabled (no CLUSTER_TOKEN)")
 
 
 @app.post("/invocations", response_model=InvocationResponse)

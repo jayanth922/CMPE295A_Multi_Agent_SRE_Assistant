@@ -20,7 +20,9 @@ COPY . .
 
 EXPOSE 3000
 
+RUN apk add --no-cache curl
+
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD wget --quiet --tries=1 --spider http://localhost:3000 || exit 1
+    CMD curl --fail --silent http://localhost:3000 || exit 1
 
 CMD ["npm", "run", "dev"]

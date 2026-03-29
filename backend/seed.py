@@ -21,7 +21,7 @@ async def seed_default_user():
             return
 
         print(f"Creating default user: {email}")
-        new_user = UserCreate(email=email, password=password, role="admin", org_name=org_name)
+        new_user = UserCreate(email=email, password=password, org_name=org_name)
         await create_user(db, new_user)
         print("User created successfully.")
 
